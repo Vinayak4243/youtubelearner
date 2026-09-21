@@ -1,0 +1,23 @@
+{
+  "name": "youtubelearner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AdaptPractice app served from the repository root with the working backend and frontend under adaptpractice/",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "start:ollama": "USE_OLLAMA=true OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b} node server.js",
+    "start:claude": "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} CLAUDE_MODEL=${CLAUDE_MODEL:-claude-sonnet-5} node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0"
+  }
+}

@@ -1,0 +1,802 @@
+[
+  {
+    "index": 1,
+    "title": "Lecture 1 : Flowchart & Pseudocode + Installation | DSA Series by Shradha Khapra Ma'am | C++",
+    "duration": "1:25:52",
+    "videoId": "VTLCoHnyACE",
+    "url": "https://www.youtube.com/watch?v=VTLCoHnyACE&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 2,
+    "title": "Lecture 2 : Variable, Data Types & Operators | DSA Series by Shradha Ma'am | C++",
+    "duration": "1:16:44",
+    "videoId": "Dxu7GKtdbnA",
+    "url": "https://www.youtube.com/watch?v=Dxu7GKtdbnA&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 3,
+    "title": "Lecture 3: Conditional Statements & Loops | DSA Series by Shradha Ma'am | C++",
+    "duration": "1:34:39",
+    "videoId": "qR9U6bKxJ7g",
+    "url": "https://www.youtube.com/watch?v=qR9U6bKxJ7g&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 4,
+    "title": "Lecture 4: Patterns | DSA Series by Shradha Khapra Ma'am | C++",
+    "duration": "1:31:07",
+    "videoId": "rga_q2N7vU8",
+    "url": "https://www.youtube.com/watch?v=rga_q2N7vU8&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 5,
+    "title": "Lecture 5: Functions | DSA Series by Shradha Khapra Ma'am | C++",
+    "duration": "49:13",
+    "videoId": "P08Z_NC8GuY",
+    "url": "https://www.youtube.com/watch?v=P08Z_NC8GuY&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 6,
+    "title": "Binary Number System | DSA Series by Shradha Khapra Ma'am | C++",
+    "duration": "37:20",
+    "videoId": "xpy5NXiBFvA",
+    "url": "https://www.youtube.com/watch?v=xpy5NXiBFvA&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 7,
+    "title": "Bitwise Operators, Data Type Modifiers & more | DSA Series by Shradha Khapra Ma'am | C++",
+    "duration": "38:33",
+    "videoId": "r-u4uh3QvsQ",
+    "url": "https://www.youtube.com/watch?v=r-u4uh3QvsQ&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 8,
+    "title": "Array Data Structure - Part1 | DSA Series by Shradha Khapra Ma'am | C++",
+    "duration": "54:07",
+    "videoId": "8wmn7k1TTcI",
+    "url": "https://www.youtube.com/watch?v=8wmn7k1TTcI&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 9,
+    "title": "Vectors in C++ | Arrays Part 2 | DSA Series by Shradha Ma'am | Lecture 9",
+    "duration": "40:06",
+    "videoId": "NWg38xWYzEg",
+    "url": "https://www.youtube.com/watch?v=NWg38xWYzEg&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 10,
+    "title": "Kadane's Algorithm | Maximum Subarray Sum | DSA Series by Shradha Ma'am",
+    "duration": "23:29",
+    "videoId": "9IZYqostl2M",
+    "url": "https://www.youtube.com/watch?v=9IZYqostl2M&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 11,
+    "title": "Majority Element | Brute- Better-Best Approach | Moore's Voting Algorithm | & Pair Sum",
+    "duration": "39:10",
+    "videoId": "_xqIp2rj8bo",
+    "url": "https://www.youtube.com/watch?v=_xqIp2rj8bo&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 12,
+    "title": "Time & Space Complexity - DSA Series by Shradha Ma'am",
+    "duration": "1:25:41",
+    "videoId": "PwKv8fOcriM",
+    "url": "https://www.youtube.com/watch?v=PwKv8fOcriM&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 13,
+    "title": "Buy and Sell Stock Problem and Pow(X,N) Power exponential Problem - Leetcode | DSA Series",
+    "duration": "29:10",
+    "videoId": "WBzZCm46mFo",
+    "url": "https://www.youtube.com/watch?v=WBzZCm46mFo&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 14,
+    "title": "Container with Most Water Problem | Brute & Optimal Solution | Two Pointer Approach - Leetcode 11",
+    "duration": "32:00",
+    "videoId": "EbkMABpP52U",
+    "url": "https://www.youtube.com/watch?v=EbkMABpP52U&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 15,
+    "title": "Product of Array Except Self | Brute to Optimal Solution | Leetcode 238",
+    "duration": "29:30",
+    "videoId": "TW2m8m_FNJE",
+    "url": "https://www.youtube.com/watch?v=TW2m8m_FNJE&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 16,
+    "title": "Pointers in C++ | In Detail | DSA Series by Shradha Ma'am",
+    "duration": "46:08",
+    "videoId": "qYEjR6M0wSk",
+    "url": "https://www.youtube.com/watch?v=qYEjR6M0wSk&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 17,
+    "title": "Binary Search Algorithm - Iterative and Recursive Method | [Theory + Code] with Example",
+    "duration": "44:16",
+    "videoId": "TbbSJrY5GqQ",
+    "url": "https://www.youtube.com/watch?v=TbbSJrY5GqQ&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 18,
+    "title": "Search in Rotated Sorted Array | Binary Search | Leetcode 33",
+    "duration": "19:30",
+    "videoId": "6WNZQBHWQJs",
+    "url": "https://www.youtube.com/watch?v=6WNZQBHWQJs&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 19,
+    "title": "Peak Index in Mountain Array | Binary Search | Leetcode 852",
+    "duration": "23:34",
+    "videoId": "RjxD6UXGlhc",
+    "url": "https://www.youtube.com/watch?v=RjxD6UXGlhc&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 20,
+    "title": "Single Element in Sorted Array | Binary Search | DSA Series Lecture 20",
+    "duration": "27:33",
+    "videoId": "qsbCBduIs40",
+    "url": "https://www.youtube.com/watch?v=qsbCBduIs40&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 21,
+    "title": "Book Allocation or Allocate Books Problem | DSA Series - Binary Search",
+    "duration": "32:59",
+    "videoId": "JRAByolWqhw",
+    "url": "https://www.youtube.com/watch?v=JRAByolWqhw&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 22,
+    "title": "Painter's Partition Problem | DSA Placement Series - Binary Search | Lecture 22",
+    "duration": "27:44",
+    "videoId": "srsFN5OHBgw",
+    "url": "https://www.youtube.com/watch?v=srsFN5OHBgw&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 23,
+    "title": "Aggressive Cows Problem | DSA Placement Series - Binary Search | Lecture 23",
+    "duration": "30:12",
+    "videoId": "7wOzDqsfXy0",
+    "url": "https://www.youtube.com/watch?v=7wOzDqsfXy0&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 24,
+    "title": "Sorting Algorithms | Bubble Sort, Selection Sort & Insertion Sort | DSA Series by Shradha Ma'am",
+    "duration": "34:33",
+    "videoId": "1jCFUv-Xlqo",
+    "url": "https://www.youtube.com/watch?v=1jCFUv-Xlqo&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 25,
+    "title": "Sort an Array of 0s, 1s & 2s | DNF Sorting Algorithm | Leetcode 75",
+    "duration": "33:39",
+    "videoId": "J48aGjfjYTI",
+    "url": "https://www.youtube.com/watch?v=J48aGjfjYTI&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 26,
+    "title": "Merge Sorted Arrays Problem and Next Permutation Problem | DSA Series",
+    "duration": "43:49",
+    "videoId": "-1cLK6PaLsQ",
+    "url": "https://www.youtube.com/watch?v=-1cLK6PaLsQ&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 27,
+    "title": "C++ STL Complete Tutorial | Standard Template Library - One Shot",
+    "duration": "1:27:20",
+    "videoId": "okhdtEk1iKk",
+    "url": "https://www.youtube.com/watch?v=okhdtEk1iKk&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 28,
+    "title": "How to setup C++ compiler on Mac ? | Software Installation for Mac users",
+    "duration": "1:40",
+    "videoId": "varXreLWPRo",
+    "url": "https://www.youtube.com/watch?v=varXreLWPRo&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 29,
+    "title": "Strings & Character Arrays in C++  -  Part 1 | DSA Placement Series",
+    "duration": "30:03",
+    "videoId": "MOSjYaVymcU",
+    "url": "https://www.youtube.com/watch?v=MOSjYaVymcU&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 30,
+    "title": "Valid Palindrome & Remove all Occurrences | Strings Part 2 | DSA Placement Series",
+    "duration": "24:02",
+    "videoId": "dSRFgEs3a6A",
+    "url": "https://www.youtube.com/watch?v=dSRFgEs3a6A&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 31,
+    "title": "Strings - Part 3 | Permutation in String | DSA Placement Series",
+    "duration": "21:41",
+    "videoId": "VXewy91P0S4",
+    "url": "https://www.youtube.com/watch?v=VXewy91P0S4&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 32,
+    "title": "Strings - Part 4 | Reverse Words in String | DSA Placement Series",
+    "duration": "14:42",
+    "videoId": "RitppzIdMCo",
+    "url": "https://www.youtube.com/watch?v=RitppzIdMCo&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 33,
+    "title": "String Compression problem - Lecture 32 | Leetcode 443",
+    "duration": "19:29",
+    "videoId": "cAB15h6-sWA",
+    "url": "https://www.youtube.com/watch?v=cAB15h6-sWA&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 34,
+    "title": "Maths for DSA - One Shot | Euclid's Algorithm | Sieve of Eratosthenes | Modular Arithmetics",
+    "duration": "55:48",
+    "videoId": "Y4KdgqV1IqA",
+    "url": "https://www.youtube.com/watch?v=Y4KdgqV1IqA&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 35,
+    "title": "2D Arrays in C++ | Part 1 | DSA Series by Shradha Ma'am",
+    "duration": "37:31",
+    "videoId": "lBL8327gq8I",
+    "url": "https://www.youtube.com/watch?v=lBL8327gq8I&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 36,
+    "title": "Search a 2D Matrix - Variation I & II | 2D Arrays - Part 2 | DSA Series by Shradha Ma'am",
+    "duration": "37:43",
+    "videoId": "LEFFjgt5i6w",
+    "url": "https://www.youtube.com/watch?v=LEFFjgt5i6w&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 37,
+    "title": "Spiral Matrix | 2D Arrays - Part 3 | Leetcode 54 | DSA Series by Shradha Ma'am",
+    "duration": "24:33",
+    "videoId": "XMpdvwUObho",
+    "url": "https://www.youtube.com/watch?v=XMpdvwUObho&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 38,
+    "title": "Two Sum | Find Duplicate | Find Repeating & Missing Values | Hashing Problems",
+    "duration": "53:30",
+    "videoId": "0Fxc_jKj2vo",
+    "url": "https://www.youtube.com/watch?v=0Fxc_jKj2vo&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 39,
+    "title": "3 Sum | Brute, Better & Optimized Approach with Codes | Leetcode 15",
+    "duration": "43:43",
+    "videoId": "K-RsltkN63w",
+    "url": "https://www.youtube.com/watch?v=K-RsltkN63w&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 40,
+    "title": "4 Sum Problem | Optimal Approach | DSA Series by Shradha Ma'am",
+    "duration": "23:02",
+    "videoId": "X6sL8JTROLY",
+    "url": "https://www.youtube.com/watch?v=X6sL8JTROLY&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 41,
+    "title": "Subarray Sum Equals K | Brute-Better-Optimal approach",
+    "duration": "34:45",
+    "videoId": "KDH4mhFVvHw",
+    "url": "https://www.youtube.com/watch?v=KDH4mhFVvHw&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 42,
+    "title": "Recursion Tutorial - Basics to Advanced | Part 1",
+    "duration": "46:22",
+    "videoId": "9OsMG4fI4OY",
+    "url": "https://www.youtube.com/watch?v=9OsMG4fI4OY&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 43,
+    "title": "Recursion Part 2 : Fibonacci numbers problem, Binary search problem, Find if array sorted problem",
+    "duration": "41:30",
+    "videoId": "4iT-GhvSKzc",
+    "url": "https://www.youtube.com/watch?v=4iT-GhvSKzc&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 44,
+    "title": "Recursion Part 3 : Backtracking in Detail | Print all Subsets | Subsets II",
+    "duration": "42:20",
+    "videoId": "pNzljlzDCiI",
+    "url": "https://www.youtube.com/watch?v=pNzljlzDCiI&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 45,
+    "title": "Permutations of an Array/String | Recursion & Backtracking",
+    "duration": "22:55",
+    "videoId": "N4gJDGdhpLw",
+    "url": "https://www.youtube.com/watch?v=N4gJDGdhpLw&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 46,
+    "title": "N-Queens Problem | using Backtracking | Leetcode Hard",
+    "duration": "24:26",
+    "videoId": "BdSJnIdR-4s",
+    "url": "https://www.youtube.com/watch?v=BdSJnIdR-4s&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 47,
+    "title": "Sudoku Solver Problem | using Backtracking | Leetcode Hard",
+    "duration": "26:58",
+    "videoId": "70cP3qtJp-s",
+    "url": "https://www.youtube.com/watch?v=70cP3qtJp-s&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 48,
+    "title": "Rat in a Maze Problem | Backtracking",
+    "duration": "32:45",
+    "videoId": "D8Yze9CDDAw",
+    "url": "https://www.youtube.com/watch?v=D8Yze9CDDAw&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 49,
+    "title": "Combination Sum Problem | Recursion & Backtracking",
+    "duration": "23:35",
+    "videoId": "jkgZw2WEaqA",
+    "url": "https://www.youtube.com/watch?v=jkgZw2WEaqA&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 50,
+    "title": "Palindrome Partitioning Problem | Recursion & Backtracking",
+    "duration": "20:44",
+    "videoId": "aZ0B1eWkSVU",
+    "url": "https://www.youtube.com/watch?v=aZ0B1eWkSVU&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 51,
+    "title": "Merge Sort Algorithm | Recursion & Backtracking",
+    "duration": "32:04",
+    "videoId": "cQDtOBTy7_Y",
+    "url": "https://www.youtube.com/watch?v=cQDtOBTy7_Y&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 52,
+    "title": "One Major update & reaching 1000M views",
+    "duration": "3:50",
+    "videoId": "SBQfXK7q5K4",
+    "url": "https://www.youtube.com/watch?v=SBQfXK7q5K4&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 53,
+    "title": "Quick Sort Algorithm - Lecture 51 of Complete DSA Placement Series",
+    "duration": "26:23",
+    "videoId": "8MNB0Mba_Dc",
+    "url": "https://www.youtube.com/watch?v=8MNB0Mba_Dc&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 54,
+    "title": "Count Inversions Problem | Brute and Optimal",
+    "duration": "24:33",
+    "videoId": "ynnWDBTdVi0",
+    "url": "https://www.youtube.com/watch?v=ynnWDBTdVi0&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 55,
+    "title": "KNIGHTS TOUR Problem - Backtracking | Leetcode 2596",
+    "duration": "22:32",
+    "videoId": "Sp1jzttFVdE",
+    "url": "https://www.youtube.com/watch?v=Sp1jzttFVdE&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 56,
+    "title": "OOPs Tutorial in One Shot | Object Oriented Programming | in C++ Language | for Placement Interviews",
+    "duration": "2:04:23",
+    "videoId": "mlIUKyZIUUU",
+    "url": "https://www.youtube.com/watch?v=mlIUKyZIUUU&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 57,
+    "title": "Introduction to Linked List | Data Structures & Algorithms",
+    "duration": "50:43",
+    "videoId": "LyuuqCVkP5I",
+    "url": "https://www.youtube.com/watch?v=LyuuqCVkP5I&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 58,
+    "title": "Reverse a Linked List | DSA Series by @shradhaKD",
+    "duration": "10:29",
+    "videoId": "R-CKBYnOv1U",
+    "url": "https://www.youtube.com/watch?v=R-CKBYnOv1U&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 59,
+    "title": "Middle of a Linked List | DSA Series by @shradhaKD",
+    "duration": "10:32",
+    "videoId": "nzaHG0dme4g",
+    "url": "https://www.youtube.com/watch?v=nzaHG0dme4g&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 60,
+    "title": "Detect & Remove Cycle in Linked List | DSA Series by @shradhaKD",
+    "duration": "30:24",
+    "videoId": "-1E8ZMS0gSs",
+    "url": "https://www.youtube.com/watch?v=-1E8ZMS0gSs&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 61,
+    "title": "Merge Two Sorted Lists | DSA Series by @shradhaKD",
+    "duration": "12:41",
+    "videoId": "f8RPIb-0DDE",
+    "url": "https://www.youtube.com/watch?v=f8RPIb-0DDE&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 62,
+    "title": "Copy List with Random Pointer | DSA Series by @shradhaKD",
+    "duration": "20:52",
+    "videoId": "8ze7Zopdsaw",
+    "url": "https://www.youtube.com/watch?v=8ze7Zopdsaw&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 63,
+    "title": "Doubly Linked List Tutorial",
+    "duration": "32:16",
+    "videoId": "bO5DasTsaRQ",
+    "url": "https://www.youtube.com/watch?v=bO5DasTsaRQ&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 64,
+    "title": "Circular Linked List in Data Structures",
+    "duration": "33:56",
+    "videoId": "e6lZY5Yha8U",
+    "url": "https://www.youtube.com/watch?v=e6lZY5Yha8U&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 65,
+    "title": "Flatten a Doubly Linked List | Leetcode 430 | DSA Series by @shradhaKD",
+    "duration": "24:47",
+    "videoId": "I8b0rff5F9M",
+    "url": "https://www.youtube.com/watch?v=I8b0rff5F9M&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 66,
+    "title": "Reverse Nodes in K-Group | Linked List",
+    "duration": "20:39",
+    "videoId": "-swgIiMIlJo",
+    "url": "https://www.youtube.com/watch?v=-swgIiMIlJo&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 67,
+    "title": "Swap Nodes in Pairs | Linked List",
+    "duration": "20:06",
+    "videoId": "wwbTMNVlFHQ",
+    "url": "https://www.youtube.com/watch?v=wwbTMNVlFHQ&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 68,
+    "title": "Introduction to STACKS | Data Structures & Algorithms | Lecture 66",
+    "duration": "22:11",
+    "videoId": "0X-fV-1ir9c",
+    "url": "https://www.youtube.com/watch?v=0X-fV-1ir9c&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 69,
+    "title": "Valid Parentheses | Stack | Lecture 67",
+    "duration": "16:25",
+    "videoId": "NlHupEeDXzY",
+    "url": "https://www.youtube.com/watch?v=NlHupEeDXzY&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 70,
+    "title": "Stock Span Problem | Optimal Solution",
+    "duration": "26:29",
+    "videoId": "01vBuZyMfqk",
+    "url": "https://www.youtube.com/watch?v=01vBuZyMfqk&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 71,
+    "title": "Next Greater Element | Optimal Solution & Code",
+    "duration": "23:32",
+    "videoId": "NKbExYwvjb0",
+    "url": "https://www.youtube.com/watch?v=NKbExYwvjb0&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 72,
+    "title": "Previous Smaller Element | Optimal Solution & Code",
+    "duration": "9:24",
+    "videoId": "WnjUfBn9nZM",
+    "url": "https://www.youtube.com/watch?v=WnjUfBn9nZM&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 73,
+    "title": "Design a Min Stack | Optimal Solution & Code",
+    "duration": "24:34",
+    "videoId": "wHDm-N2m2XY",
+    "url": "https://www.youtube.com/watch?v=wHDm-N2m2XY&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 74,
+    "title": "Largest Rectangle in Histogram | Best Solution & Code",
+    "duration": "32:56",
+    "videoId": "ysy1o-QEj3k",
+    "url": "https://www.youtube.com/watch?v=ysy1o-QEj3k&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 75,
+    "title": "L73. Next Greater Element - II | Stack & Queue",
+    "duration": "20:04",
+    "videoId": "If--3pm9K3U",
+    "url": "https://www.youtube.com/watch?v=If--3pm9K3U&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 76,
+    "title": "L74. Trapping Rainwater Problem | Optimal Solution & Code",
+    "duration": "30:50",
+    "videoId": "UHHp8USwx4M",
+    "url": "https://www.youtube.com/watch?v=UHHp8USwx4M&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 77,
+    "title": "L75. The Celebrity Problem | Stack & Queue",
+    "duration": "15:11",
+    "videoId": "OZPmEA_8FM8",
+    "url": "https://www.youtube.com/watch?v=OZPmEA_8FM8&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 78,
+    "title": "L76. Implement LRU Cache | Linked List",
+    "duration": "35:34",
+    "videoId": "GsY6y0iPaHw",
+    "url": "https://www.youtube.com/watch?v=GsY6y0iPaHw&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 79,
+    "title": "New Chapter : Queue Data Structure",
+    "duration": "18:55",
+    "videoId": "Khf9v67Ya30",
+    "url": "https://www.youtube.com/watch?v=Khf9v67Ya30&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 80,
+    "title": "L78. Circular Queue in Data Strucuture",
+    "duration": "18:37",
+    "videoId": "4mKKolshFD0",
+    "url": "https://www.youtube.com/watch?v=4mKKolshFD0&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 81,
+    "title": "L79. Implement Queue using Stack & Stack using Queue",
+    "duration": "15:47",
+    "videoId": "sFvP5Ois0CE",
+    "url": "https://www.youtube.com/watch?v=sFvP5Ois0CE&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 82,
+    "title": "L80. First Unique Character in String | Easy - Leetcode387",
+    "duration": "13:23",
+    "videoId": "sqyCBvEQN9c",
+    "url": "https://www.youtube.com/watch?v=sqyCBvEQN9c&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 83,
+    "title": "L81. Sliding Window Maximum | Queue",
+    "duration": "31:22",
+    "videoId": "XwG5cozqfaM",
+    "url": "https://www.youtube.com/watch?v=XwG5cozqfaM&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 84,
+    "title": "L82. Gas Station | Greedy Approach | Leetcode 134",
+    "duration": "22:16",
+    "videoId": "SmTow5Ht4iU",
+    "url": "https://www.youtube.com/watch?v=SmTow5Ht4iU&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 85,
+    "title": "Binary Trees in Data Structures | Tree Traversal | DSA Placement Series",
+    "duration": "1:14:15",
+    "videoId": "eKJrXBCRuNQ",
+    "url": "https://www.youtube.com/watch?v=eKJrXBCRuNQ&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 86,
+    "title": "L.84 Height of a Binary Tree | Count of Nodes in a Binary Tree",
+    "duration": "23:09",
+    "videoId": "7tzHzN_Ehus",
+    "url": "https://www.youtube.com/watch?v=7tzHzN_Ehus&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 87,
+    "title": "L.85 Identical Tree (same tree) | Subtree of another Tree",
+    "duration": "23:28",
+    "videoId": "tumW7jsjv68",
+    "url": "https://www.youtube.com/watch?v=tumW7jsjv68&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 88,
+    "title": "L.86 Diameter of Binary Tree",
+    "duration": "19:29",
+    "videoId": "aPyDPImR5UM",
+    "url": "https://www.youtube.com/watch?v=aPyDPImR5UM&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 89,
+    "title": "Top View of a Binary Tree | DSA Series : L.87",
+    "duration": "19:39",
+    "videoId": "FGr-syrhvOA",
+    "url": "https://www.youtube.com/watch?v=FGr-syrhvOA&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 90,
+    "title": "Kth Level of a Binary Tree | DSA Series : L.88",
+    "duration": "7:59",
+    "videoId": "ze4JO_ODl3w",
+    "url": "https://www.youtube.com/watch?v=ze4JO_ODl3w&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 91,
+    "title": "Lowest Common Ancestor in Binary Tree | DSA Series : L.89",
+    "duration": "18:20",
+    "videoId": "oX5D0uKOMck",
+    "url": "https://www.youtube.com/watch?v=oX5D0uKOMck&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 92,
+    "title": "Build Tree from Preorder & Inorder | DSA Series : L.90",
+    "duration": "20:59",
+    "videoId": "33b1M980cCA",
+    "url": "https://www.youtube.com/watch?v=33b1M980cCA&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 93,
+    "title": "Transform to Sum Tree | DSA Series : L.91",
+    "duration": "8:41",
+    "videoId": "TY6kEejJEM0",
+    "url": "https://www.youtube.com/watch?v=TY6kEejJEM0&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 94,
+    "title": "Binary Tree Paths | DSA Series : L.92",
+    "duration": "10:01",
+    "videoId": "AWJD__CfM6A",
+    "url": "https://www.youtube.com/watch?v=AWJD__CfM6A&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 95,
+    "title": "Maximum Width of Binary Tree | DSA Series : L.93",
+    "duration": "21:09",
+    "videoId": "rhz-csskg_A",
+    "url": "https://www.youtube.com/watch?v=rhz-csskg_A&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 96,
+    "title": "Morris Inorder Traversal | DSA Series : L.94",
+    "duration": "17:52",
+    "videoId": "PUfADhkq1LI",
+    "url": "https://www.youtube.com/watch?v=PUfADhkq1LI&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 97,
+    "title": "Flatten Binary Tree to Linked List | DSA Series : L.95",
+    "duration": "15:43",
+    "videoId": "dU2Z5HWSGM0",
+    "url": "https://www.youtube.com/watch?v=dU2Z5HWSGM0&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 98,
+    "title": "Binary Search Trees (BSTs) | DSA Series : L.96",
+    "duration": "43:16",
+    "videoId": "RuF7dPfj27Q",
+    "url": "https://www.youtube.com/watch?v=RuF7dPfj27Q&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 99,
+    "title": "Sorted Array to Balanced BST | DSA Series : L.97",
+    "duration": "8:44",
+    "videoId": "0s6sCjs_4g0",
+    "url": "https://www.youtube.com/watch?v=0s6sCjs_4g0&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  },
+  {
+    "index": 100,
+    "title": "Validate Binary Search Tree | DSA Series : L.98",
+    "duration": "12:41",
+    "videoId": "dSBcCynP1nA",
+    "url": "https://www.youtube.com/watch?v=dSBcCynP1nA&list=PLfqMhTWNBTe137I_EPQd34TsgV6IO55pt",
+    "status": "Available"
+  }
+]
