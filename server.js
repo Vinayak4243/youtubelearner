@@ -1,20 +1,7 @@
 // server/server.js
 //
-// The backend behind AdaptPractice. It holds ANTHROPIC_API_KEY and exposes
-// three generic AI routes — text, JSON, and a streamed explanation — that
-// the frontend in public/app.js calls instead of the Claude-artifact-only
-// "sample" capability the app used when it lived inside claude.ai.
-//
-// Every prompt AdaptPractice sends (course maps, assignments, grading,
-// roadmaps, explanations, summaries) is already fully built client-side in
-// app.js — this server doesn't know or care what feature is calling it, it
-// just forwards the prompt to Claude and hands back text, JSON, or a stream.
-//
-// Run it:
-//   npm install
-//   cp .env.example .env      (then paste your key into .env)
-//   npm start
-//   open http://localhost:8787
+// The backend behind AdaptPractice.
+// Supports running as a standalone Node server or as a Vercel Serverless Function.
 
 require('dotenv').config();
 const express = require('express');
@@ -24,12 +11,12 @@ const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 
-const { askText, askJSON, streamText, MODEL } = require('./claude');
+const { askText, askJSON, streamText, MODEL, getHealth } = require('./claude');
 
 const app = express();
 const PORT = process.env.PORT || 8787;
 const ALLOWED = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
-const MAX_PROMPT_CHARS = 40000; // generous — course text and transcripts can be long
+const MAX_PROMPT_CHARS = 40000;
 
 app.use(express.json({ limit: '4mb' }));
 
@@ -42,15 +29,17 @@ app.use(cors({
 
 app.use('/api/', rateLimit({
   windowMs: 60 * 1000,
-  max: 30,
+  max: 60,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests. Wait a minute and try again.' }
 }));
 
 const APP_ROOT = fs.existsSync(path.join(__dirname, 'public')) ? path.join(__dirname, 'public') : __dirname;
-app.use(express.static(APP_ROOT));
-app.get(/^(?!\/api\/).*$/, (req, res) => {
+app.use(express.static(APP_ROOT, { index: false }));
+app.get(/^(?!\/api\/).*$/, (req, res, next) => {
+  const pathname = req.path || '/';
+  if (/\.[A-Za-z0-9]+$/.test(pathname) || pathname.startsWith('/_')) return next();
   res.sendFile(path.join(APP_ROOT, 'index.html'));
 });
 
@@ -63,17 +52,21 @@ function aiFailure(err) {
   if (/credit balance is too low|purchase credits|plans?\s*&?\s*billing/i.test(message)) {
     return { status: 402, code: 'credits_exhausted', message: 'Your Anthropic API account has no available credit. Add credit in Anthropic Console → Plans & Billing, then try again.' };
   }
+  if (/no.*key.*configured|missing.*key|set anthropic_api_key/i.test(message)) {
+    return { status: 400, code: 'missing_api_key', message: 'No AI API key is configured. Add ANTHROPIC_API_KEY or GEMINI_API_KEY in Vercel environment variables or enter it in Settings.' };
+  }
   if (/authentication_error|invalid.*api key|api[_ ]key/i.test(message)) {
-    return { status: 401, code: 'invalid_api_key', message: 'The Anthropic API key was rejected. Check ANTHROPIC_API_KEY and restart the server.' };
+    return { status: 401, code: 'invalid_api_key', message: 'The AI API key was rejected. Please verify your API key.' };
   }
   if (/not_found_error|model.*not found|unknown model/i.test(message)) {
-    return { status: 400, code: 'invalid_model', message: 'The configured Claude model is unavailable. Set CLAUDE_MODEL to an active Anthropic model and restart the server.' };
+    return { status: 400, code: 'invalid_model', message: 'The configured AI model is unavailable. Update the model name in your environment.' };
   }
   if (/overloaded_error|overloaded/i.test(message)) {
-    return { status: 529, code: 'provider_overloaded', message: 'Anthropic is temporarily overloaded. Please retry in a moment.' };
+    return { status: 529, code: 'provider_overloaded', message: 'The AI provider is temporarily overloaded. Please retry in a moment.' };
   }
-  return { status: 502, code: 'upstream_error', message: 'The AI provider could not complete the request. Please try again.' };
+  return { status: 502, code: 'upstream_error', message: message || 'The AI provider could not complete the request. Please try again.' };
 }
+
 function asyncRoute(fn) {
   return (req, res) => fn(req, res).catch(err => {
     console.error(err);
@@ -81,6 +74,7 @@ function asyncRoute(fn) {
     bad(res, failure.status, failure.message, failure.code);
   });
 }
+
 function readPrompt(req, res) {
   const { prompt } = req.body || {};
   if (!prompt || typeof prompt !== 'string') { bad(res, 400, 'prompt is required'); return null; }
@@ -88,15 +82,28 @@ function readPrompt(req, res) {
   return prompt;
 }
 
-const YT_DLP_PATH = process.env.YT_DLP_PATH || [
+function readCustomKey(req) {
+  const header = req.headers['x-api-key'] || req.headers['authorization'];
+  if (!header) return null;
+  return header.replace(/^Bearer\s+/i, '').trim() || null;
+}
+
+const YT_DLP_CANDIDATES = [
+  process.env.YT_DLP_PATH,
   '/Users/vinayak/Library/Python/3.9/bin/yt-dlp',
   '/opt/homebrew/bin/yt-dlp',
-  '/usr/local/bin/yt-dlp',
-  'yt-dlp'
-].find(candidate => candidate && (candidate === 'yt-dlp' || fs.existsSync(candidate))) || 'yt-dlp';
+  '/usr/local/bin/yt-dlp'
+].filter(Boolean);
+
+const YT_DLP_PATH = YT_DLP_CANDIDATES.find(candidate => {
+  try { return fs.existsSync(candidate); } catch (e) { return false; }
+}) || (process.env.VERCEL ? null : 'yt-dlp');
 
 function getPlaylistItems(url) {
   return new Promise((resolve, reject) => {
+    if (!YT_DLP_PATH) {
+      return reject(new Error('Automated playlist fetching requires yt-dlp. On the web version, please paste your playlist video titles directly into the box.'));
+    }
     execFile(YT_DLP_PATH, ['--flat-playlist', '--print', '%(playlist_index)s|%(title)s|%(id)s|%(duration)s|%(url)s', url], { timeout: 30000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         const msg = (stderr || err.message || '').trim() || 'Could not read that YouTube playlist.';
@@ -116,35 +123,38 @@ function getPlaylistItems(url) {
         if (!title || !watchUrl) continue;
         items.push({ index: Number.isFinite(index) ? index : items.length + 1, title, id: videoId, duration, url: watchUrl });
       }
-      if (!items.length) return reject(new Error('No videos were found in that playlist.'));
+      if (!items.length) return reject(new Error('No videos were found in that playlist. You can paste the lesson titles directly.'));
       resolve(items);
     });
   });
 }
 
-app.get('/api/health', (req, res) => res.json({ ok: true, model: MODEL }));
+app.get(['/api/health', '/health', '/api'], (req, res) => res.json(getHealth()));
 
-app.get('/api/playlist', asyncRoute(async (req, res) => {
+app.get(['/api/playlist', '/playlist'], asyncRoute(async (req, res) => {
   const url = String(req.query.url || '').trim();
   if (!url) return bad(res, 400, 'A YouTube playlist URL is required.');
   const items = await getPlaylistItems(url);
   res.json({ ok: true, items });
 }));
 
-app.post('/api/ai/text', asyncRoute(async (req, res) => {
+app.post(['/api/ai/text', '/ai/text'], asyncRoute(async (req, res) => {
   const prompt = readPrompt(req, res); if (prompt === null) return;
-  const text = await askText(prompt, 1500);
+  const customKey = readCustomKey(req);
+  const text = await askText(prompt, 1500, customKey);
   res.json({ text });
 }));
 
-app.post('/api/ai/json', asyncRoute(async (req, res) => {
+app.post(['/api/ai/json', '/ai/json'], asyncRoute(async (req, res) => {
   const prompt = readPrompt(req, res); if (prompt === null) return;
-  const out = await askJSON(prompt, 3500);
+  const customKey = readCustomKey(req);
+  const out = await askJSON(prompt, 3500, customKey);
   res.json(out);
 }));
 
-app.post('/api/ai/stream', (req, res) => {
+app.post(['/api/ai/stream', '/ai/stream'], (req, res) => {
   const prompt = readPrompt(req, res); if (prompt === null) return;
+  const customKey = readCustomKey(req);
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -164,16 +174,25 @@ app.post('/api/ai/stream', (req, res) => {
       maxTokens: 700,
       onDelta: (delta) => { if (!done && !res.writableEnded) res.write(`data: ${JSON.stringify({ delta })}\n\n`); },
       onEnd: () => finish('data: [DONE]\n\n'),
-      onError: (err) => { console.error('stream error:', err.message || err); finish(`data: ${JSON.stringify({ error: 'stream failed' })}\n\n`); }
-    });
+      onError: (err) => {
+        console.error('stream error:', err.message || err);
+        const failure = aiFailure(err);
+        finish(`data: ${JSON.stringify({ error: failure.message })}\n\n`);
+      }
+    }, customKey);
   } catch (err) {
     console.error(err);
-    finish(`data: ${JSON.stringify({ error: 'stream failed to start' })}\n\n`);
+    const failure = aiFailure(err);
+    finish(`data: ${JSON.stringify({ error: failure.message })}\n\n`);
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`AdaptPractice running: http://localhost:${PORT}`);
-  console.log(`Model: ${MODEL}`);
-  if (!ALLOWED.length) console.log('ALLOWED_ORIGINS is empty — every origin is currently allowed. Set it before deploying publicly.');
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`AdaptPractice running: http://localhost:${PORT}`);
+    console.log(`Health: ${JSON.stringify(getHealth())}`);
+    if (!ALLOWED.length) console.log('ALLOWED_ORIGINS is empty — every origin is currently allowed.');
+  });
+}
+
+module.exports = app;

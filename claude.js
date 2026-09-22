@@ -1,8 +1,7 @@
 // server/claude.js
 //
-// Local free-model backend for AdaptPractice.
-// By default this prefers Ollama so the app works without paid Anthropic API credits.
-// If ANTHROPIC_API_KEY is set and USE_OLLAMA is not true, Anthropic is used instead.
+// Multi-provider AI backend for AdaptPractice.
+// Supports Anthropic Claude, Google Gemini, and local Ollama.
 
 let Anthropic = null;
 try {
@@ -11,11 +10,38 @@ try {
   Anthropic = null;
 }
 
-const USE_OLLAMA = String(process.env.USE_OLLAMA || '').toLowerCase() === 'true' || !process.env.ANTHROPIC_API_KEY;
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const USE_OLLAMA = String(process.env.USE_OLLAMA || '').toLowerCase() === 'true' ||
+  (!IS_SERVERLESS && !process.env.ANTHROPIC_API_KEY && !process.env.GEMINI_API_KEY);
+
 const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
 const OLLAMA_FALLBACK_MODELS = ['qwen2.5:3b', 'llama3.2:3b', 'llama3.1:8b', 'mistral:7b'];
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || OLLAMA_FALLBACK_MODELS[0];
-const MODEL = USE_OLLAMA ? OLLAMA_MODEL : (process.env.CLAUDE_MODEL || 'claude-sonnet-5');
+
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+
+function getActiveModel() {
+  if (process.env.ANTHROPIC_API_KEY) return CLAUDE_MODEL;
+  if (process.env.GEMINI_API_KEY) return GEMINI_MODEL;
+  if (USE_OLLAMA) return OLLAMA_MODEL;
+  return CLAUDE_MODEL;
+}
+
+const MODEL = getActiveModel();
+
+function getHealth() {
+  if (process.env.ANTHROPIC_API_KEY) {
+    return { ok: true, provider: 'anthropic', model: CLAUDE_MODEL };
+  }
+  if (process.env.GEMINI_API_KEY) {
+    return { ok: true, provider: 'gemini', model: GEMINI_MODEL };
+  }
+  if (USE_OLLAMA && !IS_SERVERLESS) {
+    return { ok: true, provider: 'ollama', model: OLLAMA_MODEL };
+  }
+  return { ok: false, provider: 'none', message: 'No AI key configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY to activate AI.' };
+}
 
 function listOllamaModels() {
   return [...new Set([process.env.OLLAMA_MODEL, ...OLLAMA_FALLBACK_MODELS, OLLAMA_MODEL].filter(Boolean))];
@@ -52,9 +78,15 @@ async function askOllamaOnce(prompt, { stream = false, maxTokens = 1200, model }
   return res;
 }
 
-let anthropic = null;
-if (!USE_OLLAMA && Anthropic && process.env.ANTHROPIC_API_KEY) {
-  anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+let anthropicClient = null;
+function getAnthropicClient(customKey) {
+  const key = customKey || process.env.ANTHROPIC_API_KEY;
+  if (!key) return null;
+  if (!customKey && anthropicClient) return anthropicClient;
+  if (!Anthropic) Anthropic = require('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey: key });
+  if (!customKey) anthropicClient = client;
+  return client;
 }
 
 const SYSTEM = 'You are acting as the AI backend for AdaptPractice, an adaptive learning platform. ' +
@@ -73,38 +105,65 @@ async function askTextOllama(prompt, maxTokens = 1200) {
   throw lastErr || new Error('No Ollama model available.');
 }
 
-async function askText(prompt, maxTokens = 1200) {
+async function askTextGemini(prompt, maxTokens = 1500, key = process.env.GEMINI_API_KEY) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: SYSTEM }] },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: maxTokens }
+    })
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Gemini error: ${res.status} ${errText}`);
+  }
+
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  return text.trim();
+}
+
+async function askText(prompt, maxTokens = 1200, customKey = null) {
+  const anthropicKey = customKey && customKey.startsWith('sk-ant-') ? customKey : process.env.ANTHROPIC_API_KEY;
+  const geminiKey = customKey && !customKey.startsWith('sk-ant-') ? customKey : process.env.GEMINI_API_KEY;
+
+  if (anthropicKey) {
+    const client = getAnthropicClient(anthropicKey);
+    const msg = await client.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: maxTokens,
+      system: SYSTEM,
+      messages: [{ role: 'user', content: prompt }]
+    });
+    return msg.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+  }
+
+  if (geminiKey) {
+    return askTextGemini(prompt, maxTokens, geminiKey);
+  }
+
   if (USE_OLLAMA) {
     return askTextOllama(prompt, maxTokens);
   }
 
-  if (!anthropic) {
-    throw new Error('No AI backend configured. Set ANTHROPIC_API_KEY or enable Ollama via USE_OLLAMA=true.');
-  }
-
-  const msg = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: maxTokens,
-    system: SYSTEM,
-    messages: [{ role: 'user', content: prompt }]
-  });
-  return msg.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+  throw new Error('No AI backend configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY to activate AI features.');
 }
 
-/**
- * Ask for a JSON value and parse it. Retries once, showing the model its own
- * broken output, if the first reply isn't valid JSON.
- */
-async function askJSON(prompt, maxTokens = 3000) {
+async function askJSON(prompt, maxTokens = 3000, customKey = null) {
   const jsonPrompt = prompt + '\n\nReply with ONLY the JSON value. No prose, no markdown code fences, nothing before or after it.';
-  let raw = await askText(jsonPrompt, maxTokens);
+  let raw = await askText(jsonPrompt, maxTokens, customKey);
 
   try {
     return extractJSON(raw);
   } catch (firstErr) {
     const repaired = await askText(
       'Your previous reply was:\n' + raw + '\n\nThat was not valid JSON. Return the corrected value as JSON only, nothing else.',
-      maxTokens
+      maxTokens,
+      customKey
     );
     return extractJSON(repaired);
   }
@@ -170,9 +229,7 @@ function streamTextOllama(prompt, { onDelta, onEnd, onError, maxTokens = 600 }) 
               onEnd && onEnd();
               return;
             }
-          } catch (err) {
-            // Ignore incomplete partial payloads from the stream.
-          }
+          } catch (err) {}
         }
       }
 
@@ -183,30 +240,81 @@ function streamTextOllama(prompt, { onDelta, onEnd, onError, maxTokens = 600 }) 
   run(models[0]).catch((err) => onError && onError(err));
 }
 
-/**
- * Stream tokens as they arrive. onDelta(text) is called for each chunk.
- * Used for "I don't understand this" so the explanation appears as it's written.
- */
-function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }) {
+async function streamTextGemini(prompt, { onDelta, onEnd, onError, maxTokens = 700 }, key = process.env.GEMINI_API_KEY) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${key}`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: maxTokens }
+      })
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return onError && onError(new Error(`Gemini stream error (${res.status}): ${errText}`));
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('data:')) {
+          try {
+            const json = JSON.parse(trimmed.slice(5).trim());
+            const delta = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            if (delta && onDelta) onDelta(delta);
+          } catch (e) {}
+        }
+      }
+    }
+    onEnd && onEnd();
+  } catch (err) {
+    onError && onError(err);
+  }
+}
+
+function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, customKey = null) {
+  const anthropicKey = customKey && customKey.startsWith('sk-ant-') ? customKey : process.env.ANTHROPIC_API_KEY;
+  const geminiKey = customKey && !customKey.startsWith('sk-ant-') ? customKey : process.env.GEMINI_API_KEY;
+
+  if (anthropicKey) {
+    const client = getAnthropicClient(anthropicKey);
+    const stream = client.messages.stream({
+      model: CLAUDE_MODEL,
+      max_tokens: maxTokens,
+      system: SYSTEM,
+      messages: [{ role: 'user', content: prompt }]
+    });
+    stream.on('text', (delta) => onDelta && onDelta(delta));
+    stream.on('end', () => onEnd && onEnd());
+    stream.on('error', (err) => onError && onError(err));
+    return stream;
+  }
+
+  if (geminiKey) {
+    streamTextGemini(prompt, { onDelta, onEnd, onError, maxTokens }, geminiKey);
+    return;
+  }
+
   if (USE_OLLAMA) {
     return streamTextOllama(prompt, { onDelta, onEnd, onError, maxTokens });
   }
 
-  if (!anthropic) {
-    onError && onError(new Error('No AI backend configured. Set ANTHROPIC_API_KEY or enable Ollama via USE_OLLAMA=true.'));
-    return null;
-  }
-
-  const stream = anthropic.messages.stream({
-    model: MODEL,
-    max_tokens: maxTokens,
-    system: SYSTEM,
-    messages: [{ role: 'user', content: prompt }]
-  });
-  stream.on('text', (delta) => onDelta && onDelta(delta));
-  stream.on('end', () => onEnd && onEnd());
-  stream.on('error', (err) => onError && onError(err));
-  return stream;
+  onError && onError(new Error('No AI backend configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY to activate AI features.'));
 }
 
-module.exports = { askText, askJSON, streamText, MODEL };
+module.exports = { askText, askJSON, streamText, MODEL, getHealth };
