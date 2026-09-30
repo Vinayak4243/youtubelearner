@@ -50,9 +50,9 @@ function bad(res, status, message, code) {
 function aiFailure(err) {
   const message = String((err && err.message) || '');
   if (/credit balance is too low|purchase credits|plans?\s*&?\s*billing/i.test(message)) {
-    return { status: 402, code: 'credits_exhausted', message: 'Your Anthropic API account has no available credit. Add credit in Anthropic Console → Plans & Billing, then try again.' };
+    return { status: 402, code: 'credits_exhausted', message: 'Your Google Gemini API account has no available credit. Add credit in Google AI Studio → Plans & Billing, then try again.' };
   }
-  if (/no.*key.*configured|missing.*key|set anthropic_api_key/i.test(message)) {
+  if (/no.*key.*configured|missing.*key|set GEMINI_API_KEY/i.test(message)) {
     return { status: 400, code: 'missing_api_key', message: 'No AI API key is configured. Add ANTHROPIC_API_KEY or GEMINI_API_KEY in Vercel environment variables or enter it in Settings.' };
   }
   if (/authentication_error|invalid.*api key|api[_ ]key|401|403/i.test(message)) {
