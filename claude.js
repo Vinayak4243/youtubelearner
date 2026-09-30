@@ -84,9 +84,16 @@ function getAnthropicClient(customKey) {
   if (!key) return null;
   if (!customKey && anthropicClient) return anthropicClient;
   if (!Anthropic) Anthropic = require('@anthropic-ai/sdk');
-  const client = new Anthropic({ apiKey: key });
-  if (!customKey) anthropicClient = client;
-  return client;
+  
+  try {
+    const client = new Anthropic({ apiKey: key });
+    if (!customKey) anthropicClient = client;
+    return client;
+  } catch (e) {
+    const err = new Error('Failed to initialize AI client: ' + e.message);
+    err.code = 'invalid_api_key';
+    throw err;
+  }
 }
 
 const SYSTEM = 'You are acting as the AI backend for AdaptPractice, an adaptive learning platform. ' +
@@ -106,6 +113,8 @@ async function askTextOllama(prompt, maxTokens = 1200) {
 }
 
 async function askTextGemini(prompt, maxTokens = 1500, key = process.env.GEMINI_API_KEY) {
+  if (!key) throw new Error('Gemini API key is missing.');
+  
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`;
   const res = await fetch(url, {
     method: 'POST',
@@ -119,7 +128,9 @@ async function askTextGemini(prompt, maxTokens = 1500, key = process.env.GEMINI_
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Gemini error: ${res.status} ${errText}`);
+    const err = new Error(`Gemini error: ${res.status} ${errText}`);
+    if (res.status === 401 || res.status === 403) err.code = 'invalid_api_key';
+    throw err;
   }
 
   const data = await res.json();
@@ -128,22 +139,33 @@ async function askTextGemini(prompt, maxTokens = 1500, key = process.env.GEMINI_
 }
 
 async function askText(prompt, maxTokens = 1200, customKey = null) {
+  // Prioritize custom key from headers/profile if provided
   const anthropicKey = customKey && customKey.startsWith('sk-ant-') ? customKey : process.env.ANTHROPIC_API_KEY;
   const geminiKey = customKey && !customKey.startsWith('sk-ant-') ? customKey : process.env.GEMINI_API_KEY;
 
   if (anthropicKey) {
-    const client = getAnthropicClient(anthropicKey);
-    const msg = await client.messages.create({
-      model: CLAUDE_MODEL,
-      max_tokens: maxTokens,
-      system: SYSTEM,
-      messages: [{ role: 'user', content: prompt }]
-    });
-    return msg.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+    try {
+      const client = getAnthropicClient(anthropicKey);
+      const msg = await client.messages.create({
+        model: CLAUDE_MODEL,
+        max_tokens: maxTokens,
+        system: SYSTEM,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      return msg.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+    } catch (e) {
+      const err = new Error(e.message);
+      if (e.status === 401 || e.status === 403 || /api key/i.test(e.message)) err.code = 'invalid_api_key';
+      throw err;
+    }
   }
 
   if (geminiKey) {
-    return askTextGemini(prompt, maxTokens, geminiKey);
+    try {
+      return await askTextGemini(prompt, maxTokens, geminiKey);
+    } catch (e) {
+      throw e; // already tagged with code in askTextGemini
+    }
   }
 
   if (USE_OLLAMA) {
@@ -241,6 +263,9 @@ function streamTextOllama(prompt, { onDelta, onEnd, onError, maxTokens = 600 }) 
 }
 
 async function streamTextGemini(prompt, { onDelta, onEnd, onError, maxTokens = 700 }, key = process.env.GEMINI_API_KEY) {
+  if (!key) {
+    return onError && onError(new Error('Gemini API key is missing.'));
+  }
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${key}`;
   try {
     const res = await fetch(url, {
@@ -255,7 +280,9 @@ async function streamTextGemini(prompt, { onDelta, onEnd, onError, maxTokens = 7
 
     if (!res.ok) {
       const errText = await res.text();
-      return onError && onError(new Error(`Gemini stream error (${res.status}): ${errText}`));
+      const err = new Error(`Gemini stream error (${res.status}): ${errText}`);
+      if (res.status === 401 || res.status === 403) err.code = 'invalid_api_key';
+      return onError && onError(err);
     }
 
     const reader = res.body.getReader();
@@ -292,17 +319,28 @@ function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, custom
   const geminiKey = customKey && !customKey.startsWith('sk-ant-') ? customKey : process.env.GEMINI_API_KEY;
 
   if (anthropicKey) {
-    const client = getAnthropicClient(anthropicKey);
-    const stream = client.messages.stream({
-      model: CLAUDE_MODEL,
-      max_tokens: maxTokens,
-      system: SYSTEM,
-      messages: [{ role: 'user', content: prompt }]
-    });
-    stream.on('text', (delta) => onDelta && onDelta(delta));
-    stream.on('end', () => onEnd && onEnd());
-    stream.on('error', (err) => onError && onError(err));
-    return stream;
+    try {
+      const client = getAnthropicClient(anthropicKey);
+      const stream = client.messages.stream({
+        model: CLAUDE_MODEL,
+        max_tokens: maxTokens,
+        system: SYSTEM,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      stream.on('text', (delta) => onDelta && onDelta(delta));
+      stream.on('end', () => onEnd && onEnd());
+      stream.on('error', (err) => {
+        const e = new Error(err.message);
+        if (err.status === 401 || err.status === 403) e.code = 'invalid_api_key';
+        onError && onError(e);
+      });
+      return stream;
+    } catch (e) {
+      const err = new Error(e.message);
+      err.code = 'invalid_api_key';
+      onError && onError(err);
+      return;
+    }
   }
 
   if (geminiKey) {

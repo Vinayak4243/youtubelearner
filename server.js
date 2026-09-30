@@ -55,7 +55,7 @@ function aiFailure(err) {
   if (/no.*key.*configured|missing.*key|set anthropic_api_key/i.test(message)) {
     return { status: 400, code: 'missing_api_key', message: 'No AI API key is configured. Add ANTHROPIC_API_KEY or GEMINI_API_KEY in Vercel environment variables or enter it in Settings.' };
   }
-  if (/authentication_error|invalid.*api key|api[_ ]key/i.test(message)) {
+  if (/authentication_error|invalid.*api key|api[_ ]key|401|403/i.test(message)) {
     return { status: 401, code: 'invalid_api_key', message: 'The AI API key was rejected. Please verify your API key.' };
   }
   if (/not_found_error|model.*not found|unknown model/i.test(message)) {
@@ -88,6 +88,15 @@ function readCustomKey(req) {
   return header.replace(/^Bearer\s+/i, '').trim() || null;
 }
 
+// New Sanitization Helper
+function sanitizeUrl(url) {
+  if (!url) return '';
+  return String(url)
+    .trim()
+    .replace(/[>\s]+$/, '') // Remove trailing > or whitespace
+    .replace(/["']/g, '');   // Remove quotes
+}
+
 const YT_DLP_CANDIDATES = [
   process.env.YT_DLP_PATH,
   '/Users/vinayak/Library/Python/3.9/bin/yt-dlp',
@@ -100,11 +109,12 @@ const YT_DLP_PATH = YT_DLP_CANDIDATES.find(candidate => {
 }) || (process.env.VERCEL ? null : 'yt-dlp');
 
 function getPlaylistItems(url) {
+  const cleanUrl = sanitizeUrl(url);
   return new Promise((resolve, reject) => {
     if (!YT_DLP_PATH) {
       return reject(new Error('Automated playlist fetching requires yt-dlp. On the web version, please paste your playlist video titles directly into the box.'));
     }
-    execFile(YT_DLP_PATH, ['--flat-playlist', '--print', '%(playlist_index)s|%(title)s|%(id)s|%(duration)s|%(url)s', url], { timeout: 30000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(YT_DLP_PATH, ['--flat-playlist', '--print', '%(playlist_index)s|%(title)s|%(id)s|%(duration)s|%(url)s', cleanUrl], { timeout: 30000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         const msg = (stderr || err.message || '').trim() || 'Could not read that YouTube playlist.';
         return reject(new Error(msg));
@@ -132,7 +142,7 @@ function getPlaylistItems(url) {
 app.get(['/api/health', '/health', '/api'], (req, res) => res.json(getHealth()));
 
 app.get(['/api/playlist', '/playlist'], asyncRoute(async (req, res) => {
-  const url = String(req.query.url || '').trim();
+  const url = sanitizeUrl(req.query.url);
   if (!url) return bad(res, 400, 'A YouTube playlist URL is required.');
   const items = await getPlaylistItems(url);
   res.json({ ok: true, items });
