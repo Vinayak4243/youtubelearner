@@ -1,79 +1,53 @@
-# AdaptPractice — Learn Anything. Practice Intelligently.
+# 🎓 AdaptPractice
+**AI-Powered Adaptive Learning Environment**
 
-AdaptPractice is an adaptive learning web application featuring course creation, YouTube video/playlist ingestion, lesson workspaces, adaptive quiz generation, intelligent mistake classification, the weakness matrix, spaced revision, and roadmaps.
+AdaptPractice is a sophisticated learning platform that transforms any YouTube video or playlist into a structured, interactive course. By leveraging Large Language Models (LLMs), it generates customized lesson plans, identifies key concepts, and tracks student mastery through evidence-based practice.
 
-## 🌐 Live Web Version
-The app is published and running live on Vercel:
-- **Production URL**: [https://youtubelearner.vercel.app](https://youtubelearner.vercel.app)
-- **Team Alias**: [https://youtubelearner-adaptedge-academy.vercel.app](https://youtubelearner-adaptedge-academy.vercel.app)
+## 🚀 Features
 
----
+- **AI Course Generation**: Convert a YouTube playlist URL into a full course with structured lessons and a roadmap.
+- **Dynamic Concept Tracking**: The system doesn't just track "completion"; it tracks **mastery**. It uses a custom algorithm to determine if a student is "learning," "improving," or has "mastered" a specific concept.
+- **AI-Generated Assignments**: Automatically creates Multiple Choice (MCQ), True/False, and short-answer questions based on the course material.
+- **Personalized Explanations**: A "Confuse Me" feature that allows students to pinpoint a exact timestamp in a video and get a simplified AI explanation of that specific moment.
+- **Multi-Provider AI Backend**: Supports **GPT-4o**, **Google Gemini**, and **Local Ollama** models for maximum flexibility and cost-efficiency.
+- **Focus Shield**: A productivity mode to minimize distractions during study sessions.
 
-## 🚀 Quick Start (Run Locally)
+## 🛠️ Technical Stack
 
-### 1. Install dependencies
-```bash
-npm install
-```
+- **Frontend**: Vanilla JavaScript (SPA Architecture), CSS3, HTML5.
+- **Backend**: Node.js, Express.
+- **AI Integration**: Anthropic Claude / OpenAI GPT-4o / Google Gemini API.
+- **Infrastructure**: Vercel (Serverless Functions), GitHub Actions.
+- **Tools**: `yt-dlp` for high-performance YouTube metadata extraction.
 
-### 2. Configure AI (Optional for local use)
-Copy `.env.example` to `.env`:
-```bash
-cp .env.example .env
-```
+## ⚙️ Installation & Setup
 
-You can choose your AI backend:
-- **Anthropic Claude**: Set `ANTHROPIC_API_KEY=sk-ant-...`
-- **Google Gemini**: Set `GEMINI_API_KEY=AIzaSy...`
-- **Local Ollama**: Run Ollama locally (`ollama run qwen2.5:3b`) with `USE_OLLAMA=true`
+### Local Development
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/Vinayak4243/Youtubelearner.git
+   cd Youtubelearner
+   ```
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Create a `.env` file in the root directory:
+   ```env
+   YOUTUBE_API_KEY=your_youtube_key
+   GEMINI_API_KEY=your_gemini_key
+   OPENAI_API_KEY=your_openai_key
+   ```
+4. Start the server:
+   ```bash
+   node server.js
+   ```
 
-*(Note: Even without an API key, browsing, manual course creation, note taking, and weakness tracking work fully offline!)*
-
-### 3. Start the server
-```bash
-npm start
-# or for live reloading during development:
-npm run dev
-```
-
-Open **http://localhost:8787** in your browser.
-
----
-
-## 🔑 Activating AI on the Live Web
-
-On the published web app, you can activate AI in two easy ways:
-
-1. **In-Browser Configuration (Recommended)**:
-   - Navigate to **Profile** in the sidebar.
-   - Under **AI Configuration**, paste your Anthropic or Google Gemini API key.
-   - Click **Save API Key**. All AI features unlock immediately for your session.
-2. **Vercel Project Environment Variables**:
-   - In your Vercel Project Settings → Environment Variables, add `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`.
-   - Any redeployment will automatically activate AI features globally.
+## 📈 Mastery Logic
+The app uses an evidence-based update system. Mastery is not a simple percentage but a weighted score:
+- **Correct Answer**: Increases mastery significantly.
+- **Correct with Hint**: Increases mastery slightly.
+- **Incorrect Answer**: Decreases mastery and flags the concept as a "weakness" if errors persist.
 
 ---
-
-## 📁 Project Architecture
-
-```
-public/
-  index.html     HTML shell with Google Fonts & PDF.js
-  styles.css     Modern design tokens, animations, responsive layout & dark mode
-  app.js         Complete client app: state machine, views, adaptive scoring
-api/
-  index.js       Vercel Serverless Function entry point
-server.js        Express server serving static assets and API routes
-claude.js        Multi-provider AI backend (Anthropic Claude, Google Gemini, Ollama)
-vercel.json      Vercel Edge CDN rewrites and routing configuration
-```
-
----
-
-## 🚢 Deploying Updates to Vercel
-
-To publish new changes to production:
-
-```bash
-npx vercel --prod
-```
+Developed by **Vinayak4243** as part of a Bachelor's degree project.
