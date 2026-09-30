@@ -175,14 +175,14 @@ async function fetchPlaylistItems(url){
 }
 
 const AI_COPY = {
-  not_granted:'The AI backend is not reachable. You can provide an Anthropic or Gemini API key in Profile to activate AI features.',
+  not_granted:'The AI backend is not reachable. You can provide an Google or Gemini API key in Profile to activate AI features.',
   missing_api_key:'No AI API key is configured. Add your API key in Profile or set it in your hosting environment.',
   sampling_disabled:'AI is not available on this account.',
   not_declared:'This page no longer has AI access.',
   capability_disabled:'AI is unavailable in this view.',
   capability_removed:'AI is unavailable in this view.',
   rate_limited:'Too many AI requests. Wait a minute and try again.',
-  credits_exhausted:'Your Anthropic API account has no available credit. Add credit in Anthropic Console → Plans & Billing, then retry.',
+  credits_exhausted:'Your Google API account has no available credit. Add credit in Google Console → Plans & Billing, then retry.',
   invalid_api_key:'The API key was rejected. Please check your API key in Profile.',
   invalid_model:'The configured AI model is unavailable.',
   provider_overloaded:'The AI provider is temporarily overloaded. Please retry in a moment.',
