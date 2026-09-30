@@ -19,7 +19,7 @@ const OLLAMA_FALLBACK_MODELS = ['qwen2.5:3b', 'llama3.2:3b', 'llama3.1:8b', 'mis
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || OLLAMA_FALLBACK_MODELS[0];
 
 const GPT_MODEL = process.env.GPT_MODEL || 'gpt-4o';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 
 function getActiveModel() {
   if (process.env.OPENAI_API_KEY) return GPT_MODEL;
@@ -40,7 +40,7 @@ function getHealth() {
   if (USE_OLLAMA && !IS_SERVERLESS) {
     return { ok: true, provider: 'ollama', model: OLLAMA_MODEL };
   }
-  return { ok: false, provider: 'none', message: 'No AI key configured. Set OPENAI_API_KEY or GEMINI_API_KEY to activate AI.' };
+  return { ok: false, provider: 'none', message: 'No AI key configured.' };
 }
 
 function listOllamaModels() {
@@ -61,20 +61,13 @@ async function askOllamaOnce(prompt, { stream = false, maxTokens = 1200, model }
 
   if (!res.ok) {
     const text = await res.text();
-    const message = `Ollama error: ${res.status} ${text}`;
-    if (res.status === 404 || /model.*not found|unknown model/i.test(text)) {
-      const err = new Error(message);
-      err.code = 'MODEL_NOT_FOUND';
-      throw err;
-    }
-    throw new Error(message);
+    throw new Error(`Ollama error: ${res.status} ${text}`);
   }
 
   if (!stream) {
     const data = await res.json();
     return String(data.message?.content || data.response || '').trim();
   }
-
   return res;
 }
 
@@ -84,37 +77,15 @@ function getOpenAIClient(customKey) {
   if (!key) return null;
   if (!customKey && openaiClient) return openaiClient;
   if (!OpenAI) OpenAI = require('openai');
-  
-  try {
-    const client = new OpenAI({ apiKey: key });
-    if (!customKey) openaiClient = client;
-    return client;
-  } catch (e) {
-    const err = new Error('Failed to initialize OpenAI client: ' + e.message);
-    err.code = 'invalid_api_key';
-    throw err;
-  }
+  const client = new OpenAI({ apiKey: key });
+  if (!customKey) openaiClient = client;
+  return client;
 }
 
-const SYSTEM = 'You are acting as the AI backend for AdaptPractice, an adaptive learning platform. ' +
-  'Follow the instructions in the user message exactly, including any JSON structure it asks for.';
-
-async function askTextOllama(prompt, maxTokens = 1200) {
-  let lastErr = null;
-  for (const model of listOllamaModels()) {
-    try {
-      return await askOllamaOnce(prompt, { stream: false, maxTokens, model });
-    } catch (err) {
-      lastErr = err;
-      if (err && err.code !== 'MODEL_NOT_FOUND') throw err;
-    }
-  }
-  throw lastErr || new Error('No Ollama model available.');
-}
+const SYSTEM = 'You are acting as the AI backend for AdaptPractice, an adaptive learning platform. Follow the instructions exactly.';
 
 async function askTextGemini(prompt, maxTokens = 1500, key = process.env.GEMINI_API_KEY) {
   if (!key) throw new Error('Gemini API key is missing.');
-  
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`;
   const res = await fetch(url, {
     method: 'POST',
@@ -134,206 +105,115 @@ async function askTextGemini(prompt, maxTokens = 1500, key = process.env.GEMINI_
   }
 
   const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  return text.trim();
+  return (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
 }
 
 async function askText(prompt, maxTokens = 1200, customKey = null) {
-  // Prioritize custom key if provided
-  const openaiKey = customKey && !customKey.startsWith('sk-ant-') && !customKey.startsWith('AIza') ? customKey : process.env.OPENAI_API_KEY;
-  const geminiKey = customKey && customKey.startsWith('AIza') ? customKey : process.env.GEMINI_API_KEY;
+  // DETECT KEY TYPE
+  const isGeminiKey = customKey ? (customKey.startsWith('AIza')) : (process.env.GEMINI_API_KEY && !process.env.OPENAI_API_KEY);
+  
+  if (isGeminiKey) {
+    const key = customKey || process.env.GEMINI_API_KEY;
+    return askTextGemini(prompt, maxTokens, key);
+  }
 
+  const openaiKey = customKey || process.env.OPENAI_API_KEY;
   if (openaiKey) {
     try {
       const client = getOpenAIClient(openaiKey);
       const res = await client.chat.completions.create({
         model: GPT_MODEL,
-        messages: [
-          { role: 'system', content: SYSTEM },
-          { role: 'user', content: prompt }
-        ],
+        messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }],
         max_tokens: maxTokens,
       });
       return res.choices[0].message.content.trim();
     } catch (e) {
       const err = new Error(e.message);
-      if (e.status === 401 || e.status === 403 || /api key/i.test(e.message)) err.code = 'invalid_api_key';
+      if (e.status === 401 || e.status === 403) err.code = 'invalid_api_key';
       throw err;
     }
   }
 
-  if (geminiKey) {
-    try {
-      return await askTextGemini(prompt, maxTokens, geminiKey);
-    } catch (e) {
-      throw e;
-    }
-  }
-
   if (USE_OLLAMA) {
-    return askTextOllama(prompt, maxTokens);
+    let lastErr = null;
+    for (const model of listOllamaModels()) {
+      try { return await askOllamaOnce(prompt, { stream: false, maxTokens, model }); } 
+      catch (err) { lastErr = err; }
+    }
+    throw lastErr || new Error('No Ollama model available.');
   }
 
-  throw new Error('No AI backend configured. Set OPENAI_API_KEY or GEMINI_API_KEY to activate AI features.');
+  throw new Error('No valid AI key found. Please check your Profile or .env file.');
 }
 
 async function askJSON(prompt, maxTokens = 3000, customKey = null) {
-  const jsonPrompt = prompt + '\n\nReply with ONLY the JSON value. No prose, no markdown code fences, nothing before or after it.';
+  const jsonPrompt = prompt + '\n\nReply with ONLY the JSON value. No prose, no markdown code fences.';
   let raw = await askText(jsonPrompt, maxTokens, customKey);
-
-  try {
-    return extractJSON(raw);
-  } catch (firstErr) {
-    const repaired = await askText(
-      'Your previous reply was:\n' + raw + '\n\nThat was not valid JSON. Return the corrected value as JSON only, nothing else.',
-      maxTokens,
-      customKey
-    );
+  try { return extractJSON(raw); } catch (e) {
+    const repaired = await askText('Your previous reply was not valid JSON. Return the corrected value as JSON only:\n' + raw, maxTokens, customKey);
     return extractJSON(repaired);
   }
 }
 
 function extractJSON(text) {
   let t = String(text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-  const candidateStarts = ['{', '['];
-  const start = Math.min(...candidateStarts.map(c => { const i = t.indexOf(c); return i === -1 ? Infinity : i; }));
+  const start = Math.min(...['{', '['].map(c => { const i = t.indexOf(c); return i === -1 ? Infinity : i; }));
   const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));
   if (start !== Infinity && end !== -1) t = t.slice(start, end + 1);
   return JSON.parse(t);
 }
 
-function streamTextOllama(prompt, { onDelta, onEnd, onError, maxTokens = 600 }) {
-  const models = listOllamaModels();
-  let tried = 0;
-
-  const run = (model) => fetch(`${OLLAMA_BASE_URL}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
-      options: { num_predict: maxTokens }
-    })
-  })
-    .then(async (res) => {
-      if (!res.ok || !res.body) {
-        const text = await res.text();
-        const msg = `Ollama stream error: ${res.status} ${text}`;
-        if (res.status === 404 || /model.*not found|unknown model/i.test(text)) {
-          const next = models[tried + 1];
-          tried += 1;
-          if (next) return run(next);
-        }
-        throw new Error(msg);
-      }
-
+async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, customKey = null) {
+  const isGeminiKey = customKey ? (customKey.startsWith('AIza')) : (process.env.GEMINI_API_KEY && !process.env.OPENAI_API_KEY);
+  
+  if (isGeminiKey) {
+    const key = customKey || process.env.GEMINI_API_KEY;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${key}`;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: maxTokens }
+        })
+      });
+      if (!res.ok) throw new Error(`Gemini Error: ${res.status}`);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-
-        const parts = buffer.split('\n');
-        buffer = parts.pop() || '';
-
-        for (const part of parts) {
-          const line = part.trim();
-          if (!line || line === 'data: [DONE]') continue;
-          if (!line.startsWith('data:')) continue;
-
-          try {
-            const payload = JSON.parse(line.slice(5));
-            const delta = payload.message?.content || payload.response || '';
-            if (delta) onDelta && onDelta(delta);
-            if (payload.done) {
-              onEnd && onEnd();
-              return;
-            }
-          } catch (err) { }
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (line.trim().startsWith('data:')) {
+            try {
+              const json = JSON.parse(line.trim().slice(5));
+              const delta = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+              onDelta && onDelta(delta);
+            } catch(e){}
+          }
         }
       }
-
       onEnd && onEnd();
-    })
-    .catch((err) => onError && onError(err));
-
-  run(models[0]).catch((err) => onError && onError(err));
-}
-
-async function streamTextGemini(prompt, { onDelta, onEnd, onError, maxTokens = 700 }, key = process.env.GEMINI_API_KEY) {
-  if (!key) {
-    return onError && onError(new Error('Gemini API key is missing.'));
+    } catch (e) { onError && onError(e); }
+    return;
   }
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${key}`;
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: maxTokens }
-      })
-    });
 
-    if (!res.ok) {
-      const errText = await res.text();
-      const err = new Error(`Gemini stream error (${res.status}): ${errText}`);
-      if (res.status === 401 || res.status === 403) err.code = 'invalid_api_key';
-      return onError && onError(err);
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('data:')) {
-          try {
-            const json = JSON.parse(trimmed.slice(5).trim());
-            const delta = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
-            if (delta && onDelta) onDelta(delta);
-          } catch (e) { }
-        }
-      }
-    }
-    onEnd && onEnd();
-  } catch (err) {
-    onError && onError(err);
-  }
-}
-
-function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, customKey = null) {
-  const openaiKey = customKey && !customKey.startsWith('sk-ant-') && !customKey.startsWith('AIza') ? customKey : process.env.OPENAI_API_KEY;
-  const geminiKey = customKey && customKey.startsWith('AIza') ? customKey : process.env.GEMINI_API_KEY;
-
+  const openaiKey = customKey || process.env.OPENAI_API_KEY;
   if (openaiKey) {
     try {
       const client = getOpenAIClient(openaiKey);
       const stream = await client.chat.completions.create({
         model: GPT_MODEL,
-        messages: [
-          { role: 'system', content: SYSTEM },
-          { role: 'user', content: prompt }
-        ],
+        messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }],
         max_tokens: maxTokens,
         stream: true,
       });
-
-      // OpenAI SDK streams are async iterators
       (async () => {
         try {
           for await (const chunk of stream) {
@@ -341,31 +221,18 @@ function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, custom
             onDelta && onDelta(delta);
           }
           onEnd && onEnd();
-        } catch (e) {
-          const err = new Error(e.message);
-          if (e.status === 401 || e.status === 403) err.code = 'invalid_api_key';
-          onError && onError(err);
-        }
+        } catch (e) { onError && onError(e); }
       })();
       return stream;
-    } catch (e) {
-      const err = new Error(e.message);
-      err.code = 'invalid_api_key';
-      onError && onError(err);
-      return;
-    }
-  }
-
-  if (geminiKey) {
-    streamTextGemini(prompt, { onDelta, onEnd, onError, maxTokens }, geminiKey);
-    return;
+    } catch (e) { onError && onError(e); return; }
   }
 
   if (USE_OLLAMA) {
-    return streamTextOllama(prompt, { onDelta, onEnd, onError, maxTokens });
+    // Simplified Ollama stream for this version
+    onError && onError(new Error('Ollama streaming not implemented in this version.'));
+    return;
   }
-
-  onError && onError(new Error('No AI backend configured. Set OPENAI_API_KEY or GEMINI_API_KEY to activate AI features.'));
+  onError && onError(new Error('No valid AI key provided.'));
 }
 
 module.exports = { askText, askJSON, streamText, MODEL, getHealth };
