@@ -1,38 +1,38 @@
 // server/claude.js
 //
 // Multi-provider AI backend for AdaptPractice.
-// Supports Anthropic Claude, Google Gemini, and local Ollama.
+// Supports OpenAI GPT-4o, Google Gemini, and local Ollama.
 
-let Anthropic = null;
+let OpenAI = null;
 try {
-  Anthropic = require('@anthropic-ai/sdk');
+  OpenAI = require('openai');
 } catch (e) {
-  Anthropic = null;
+  OpenAI = null;
 }
 
 const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const USE_OLLAMA = String(process.env.USE_OLLAMA || '').toLowerCase() === 'true' ||
-  (!IS_SERVERLESS && !process.env.ANTHROPIC_API_KEY && !process.env.GEMINI_API_KEY);
+  (!IS_SERVERLESS && !process.env.OPENAI_API_KEY && !process.env.GEMINI_API_KEY);
 
 const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
 const OLLAMA_FALLBACK_MODELS = ['qwen2.5:3b', 'llama3.2:3b', 'llama3.1:8b', 'mistral:7b'];
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || OLLAMA_FALLBACK_MODELS[0];
 
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5';
+const GPT_MODEL = process.env.GPT_MODEL || 'gpt-4o';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
 function getActiveModel() {
-  if (process.env.ANTHROPIC_API_KEY) return CLAUDE_MODEL;
+  if (process.env.OPENAI_API_KEY) return GPT_MODEL;
   if (process.env.GEMINI_API_KEY) return GEMINI_MODEL;
   if (USE_OLLAMA) return OLLAMA_MODEL;
-  return CLAUDE_MODEL;
+  return GPT_MODEL;
 }
 
 const MODEL = getActiveModel();
 
 function getHealth() {
-  if (process.env.ANTHROPIC_API_KEY) {
-    return { ok: true, provider: 'anthropic', model: CLAUDE_MODEL };
+  if (process.env.OPENAI_API_KEY) {
+    return { ok: true, provider: 'openai', model: GPT_MODEL };
   }
   if (process.env.GEMINI_API_KEY) {
     return { ok: true, provider: 'gemini', model: GEMINI_MODEL };
@@ -40,7 +40,7 @@ function getHealth() {
   if (USE_OLLAMA && !IS_SERVERLESS) {
     return { ok: true, provider: 'ollama', model: OLLAMA_MODEL };
   }
-  return { ok: false, provider: 'none', message: 'No AI key configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY to activate AI.' };
+  return { ok: false, provider: 'none', message: 'No AI key configured. Set OPENAI_API_KEY or GEMINI_API_KEY to activate AI.' };
 }
 
 function listOllamaModels() {
@@ -78,19 +78,19 @@ async function askOllamaOnce(prompt, { stream = false, maxTokens = 1200, model }
   return res;
 }
 
-let anthropicClient = null;
-function getAnthropicClient(customKey) {
-  const key = customKey || process.env.ANTHROPIC_API_KEY;
+let openaiClient = null;
+function getOpenAIClient(customKey) {
+  const key = customKey || process.env.OPENAI_API_KEY;
   if (!key) return null;
-  if (!customKey && anthropicClient) return anthropicClient;
-  if (!Anthropic) Anthropic = require('@anthropic-ai/sdk');
+  if (!customKey && openaiClient) return openaiClient;
+  if (!OpenAI) OpenAI = require('openai');
   
   try {
-    const client = new Anthropic({ apiKey: key });
-    if (!customKey) anthropicClient = client;
+    const client = new OpenAI({ apiKey: key });
+    if (!customKey) openaiClient = client;
     return client;
   } catch (e) {
-    const err = new Error('Failed to initialize AI client: ' + e.message);
+    const err = new Error('Failed to initialize OpenAI client: ' + e.message);
     err.code = 'invalid_api_key';
     throw err;
   }
@@ -139,20 +139,22 @@ async function askTextGemini(prompt, maxTokens = 1500, key = process.env.GEMINI_
 }
 
 async function askText(prompt, maxTokens = 1200, customKey = null) {
-  // Prioritize custom key from headers/profile if provided
-  const anthropicKey = customKey && customKey.startsWith('sk-ant-') ? customKey : process.env.ANTHROPIC_API_KEY;
-  const geminiKey = customKey && !customKey.startsWith('sk-ant-') ? customKey : process.env.GEMINI_API_KEY;
+  // Prioritize custom key if provided
+  const openaiKey = customKey && !customKey.startsWith('sk-ant-') && !customKey.startsWith('AIza') ? customKey : process.env.OPENAI_API_KEY;
+  const geminiKey = customKey && customKey.startsWith('AIza') ? customKey : process.env.GEMINI_API_KEY;
 
-  if (anthropicKey) {
+  if (openaiKey) {
     try {
-      const client = getAnthropicClient(anthropicKey);
-      const msg = await client.messages.create({
-        model: CLAUDE_MODEL,
+      const client = getOpenAIClient(openaiKey);
+      const res = await client.chat.completions.create({
+        model: GPT_MODEL,
+        messages: [
+          { role: 'system', content: SYSTEM },
+          { role: 'user', content: prompt }
+        ],
         max_tokens: maxTokens,
-        system: SYSTEM,
-        messages: [{ role: 'user', content: prompt }]
       });
-      return msg.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+      return res.choices[0].message.content.trim();
     } catch (e) {
       const err = new Error(e.message);
       if (e.status === 401 || e.status === 403 || /api key/i.test(e.message)) err.code = 'invalid_api_key';
@@ -164,7 +166,7 @@ async function askText(prompt, maxTokens = 1200, customKey = null) {
     try {
       return await askTextGemini(prompt, maxTokens, geminiKey);
     } catch (e) {
-      throw e; // already tagged with code in askTextGemini
+      throw e;
     }
   }
 
@@ -172,7 +174,7 @@ async function askText(prompt, maxTokens = 1200, customKey = null) {
     return askTextOllama(prompt, maxTokens);
   }
 
-  throw new Error('No AI backend configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY to activate AI features.');
+  throw new Error('No AI backend configured. Set OPENAI_API_KEY or GEMINI_API_KEY to activate AI features.');
 }
 
 async function askJSON(prompt, maxTokens = 3000, customKey = null) {
@@ -315,25 +317,36 @@ async function streamTextGemini(prompt, { onDelta, onEnd, onError, maxTokens = 7
 }
 
 function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, customKey = null) {
-  const anthropicKey = customKey && customKey.startsWith('sk-ant-') ? customKey : process.env.ANTHROPIC_API_KEY;
-  const geminiKey = customKey && !customKey.startsWith('sk-ant-') ? customKey : process.env.GEMINI_API_KEY;
+  const openaiKey = customKey && !customKey.startsWith('sk-ant-') && !customKey.startsWith('AIza') ? customKey : process.env.OPENAI_API_KEY;
+  const geminiKey = customKey && customKey.startsWith('AIza') ? customKey : process.env.GEMINI_API_KEY;
 
-  if (anthropicKey) {
+  if (openaiKey) {
     try {
-      const client = getAnthropicClient(anthropicKey);
-      const stream = client.messages.stream({
-        model: CLAUDE_MODEL,
+      const client = getOpenAIClient(openaiKey);
+      const stream = await client.chat.completions.create({
+        model: GPT_MODEL,
+        messages: [
+          { role: 'system', content: SYSTEM },
+          { role: 'user', content: prompt }
+        ],
         max_tokens: maxTokens,
-        system: SYSTEM,
-        messages: [{ role: 'user', content: prompt }]
+        stream: true,
       });
-      stream.on('text', (delta) => onDelta && onDelta(delta));
-      stream.on('end', () => onEnd && onEnd());
-      stream.on('error', (err) => {
-        const e = new Error(err.message);
-        if (err.status === 401 || err.status === 403) e.code = 'invalid_api_key';
-        onError && onError(e);
-      });
+
+      // OpenAI SDK streams are async iterators
+      (async () => {
+        try {
+          for await (const chunk of stream) {
+            const delta = chunk.choices[0]?.delta?.content || '';
+            onDelta && onDelta(delta);
+          }
+          onEnd && onEnd();
+        } catch (e) {
+          const err = new Error(e.message);
+          if (e.status === 401 || e.status === 403) err.code = 'invalid_api_key';
+          onError && onError(err);
+        }
+      })();
       return stream;
     } catch (e) {
       const err = new Error(e.message);
@@ -352,7 +365,7 @@ function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, custom
     return streamTextOllama(prompt, { onDelta, onEnd, onError, maxTokens });
   }
 
-  onError && onError(new Error('No AI backend configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY to activate AI features.'));
+  onError && onError(new Error('No AI backend configured. Set OPENAI_API_KEY or GEMINI_API_KEY to activate AI features.'));
 }
 
 module.exports = { askText, askJSON, streamText, MODEL, getHealth };
