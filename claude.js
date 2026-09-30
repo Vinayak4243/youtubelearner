@@ -1,92 +1,33 @@
 // server/claude.js
 //
 // Multi-provider AI backend for AdaptPractice.
-// Supports OpenAI GPT-4o, Google Gemini, and local Ollama.
+// FORCED GEMINI MODE: Prioritizes Gemini for all requests.
 
 let OpenAI = null;
-try {
-  OpenAI = require('openai');
-} catch (e) {
-  OpenAI = null;
-}
+try { OpenAI = require('openai'); } catch (e) {}
 
 const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
-const USE_OLLAMA = String(process.env.USE_OLLAMA || '').toLowerCase() === 'true' ||
-  (!IS_SERVERLESS && !process.env.OPENAI_API_KEY && !process.env.GEMINI_API_KEY);
+const USE_OLLAMA = String(process.env.USE_OLLAMA || '').toLowerCase() === 'true';
 
 const OLLAMA_BASE_URL = (process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/$/, '');
-const OLLAMA_FALLBACK_MODELS = ['qwen2.5:3b', 'llama3.2:3b', 'llama3.1:8b', 'mistral:7b'];
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || OLLAMA_FALLBACK_MODELS[0];
-
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:3b';
 const GPT_MODEL = process.env.GPT_MODEL || 'gpt-4o';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 
-function getActiveModel() {
-  if (process.env.OPENAI_API_KEY) return GPT_MODEL;
-  if (process.env.GEMINI_API_KEY) return GEMINI_MODEL;
-  if (USE_OLLAMA) return OLLAMA_MODEL;
-  return GPT_MODEL;
-}
-
-const MODEL = getActiveModel();
-
 function getHealth() {
-  if (process.env.OPENAI_API_KEY) {
-    return { ok: true, provider: 'openai', model: GPT_MODEL };
-  }
-  if (process.env.GEMINI_API_KEY) {
-    return { ok: true, provider: 'gemini', model: GEMINI_MODEL };
-  }
-  if (USE_OLLAMA && !IS_SERVERLESS) {
-    return { ok: true, provider: 'ollama', model: OLLAMA_MODEL };
-  }
+  if (process.env.GEMINI_API_KEY) return { ok: true, provider: 'gemini', model: GEMINI_MODEL };
+  if (process.env.OPENAI_API_KEY) return { ok: true, provider: 'openai', model: GPT_MODEL };
+  if (USE_OLLAMA && !IS_SERVERLESS) return { ok: true, provider: 'ollama', model: OLLAMA_MODEL };
   return { ok: false, provider: 'none', message: 'No AI key configured.' };
-}
-
-function listOllamaModels() {
-  return [...new Set([process.env.OLLAMA_MODEL, ...OLLAMA_FALLBACK_MODELS, OLLAMA_MODEL].filter(Boolean))];
-}
-
-async function askOllamaOnce(prompt, { stream = false, maxTokens = 1200, model }) {
-  const res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      stream,
-      options: { num_predict: maxTokens }
-    })
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Ollama error: ${res.status} ${text}`);
-  }
-
-  if (!stream) {
-    const data = await res.json();
-    return String(data.message?.content || data.response || '').trim();
-  }
-  return res;
-}
-
-let openaiClient = null;
-function getOpenAIClient(customKey) {
-  const key = customKey || process.env.OPENAI_API_KEY;
-  if (!key) return null;
-  if (!customKey && openaiClient) return openaiClient;
-  if (!OpenAI) OpenAI = require('openai');
-  const client = new OpenAI({ apiKey: key });
-  if (!customKey) openaiClient = client;
-  return client;
 }
 
 const SYSTEM = 'You are acting as the AI backend for AdaptPractice, an adaptive learning platform. Follow the instructions exactly.';
 
-async function askTextGemini(prompt, maxTokens = 1500, key = process.env.GEMINI_API_KEY) {
-  if (!key) throw new Error('Gemini API key is missing.');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`;
+async function askTextGemini(prompt, maxTokens = 1500, key) {
+  const finalKey = key || process.env.GEMINI_API_KEY;
+  if (!finalKey) throw new Error('Gemini API key is missing.');
+  
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${finalKey}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -98,29 +39,27 @@ async function askTextGemini(prompt, maxTokens = 1500, key = process.env.GEMINI_
   });
 
   if (!res.ok) {
-    const errText = await res.text();
-    const err = new Error(`Gemini error: ${res.status} ${errText}`);
+    const text = await res.text();
+    const err = new Error(`Gemini Error ${res.status}: ${text}`);
     if (res.status === 401 || res.status === 403) err.code = 'invalid_api_key';
     throw err;
   }
-
   const data = await res.json();
   return (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
 }
 
 async function askText(prompt, maxTokens = 1200, customKey = null) {
-  // DETECT KEY TYPE
-  const isGeminiKey = customKey ? (customKey.startsWith('AIza')) : (process.env.GEMINI_API_KEY && !process.env.OPENAI_API_KEY);
-  
-  if (isGeminiKey) {
-    const key = customKey || process.env.GEMINI_API_KEY;
+  // FORCE GEMINI IF KEY PROVIDED
+  const key = customKey || process.env.GEMINI_API_KEY;
+  if (key && (key.startsWith('AIza') || !process.env.OPENAI_API_KEY)) {
     return askTextGemini(prompt, maxTokens, key);
   }
 
+  // FALLBACK TO OPENAI
   const openaiKey = customKey || process.env.OPENAI_API_KEY;
   if (openaiKey) {
     try {
-      const client = getOpenAIClient(openaiKey);
+      const client = new OpenAI({ apiKey: openaiKey });
       const res = await client.chat.completions.create({
         model: GPT_MODEL,
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }],
@@ -134,16 +73,7 @@ async function askText(prompt, maxTokens = 1200, customKey = null) {
     }
   }
 
-  if (USE_OLLAMA) {
-    let lastErr = null;
-    for (const model of listOllamaModels()) {
-      try { return await askOllamaOnce(prompt, { stream: false, maxTokens, model }); } 
-      catch (err) { lastErr = err; }
-    }
-    throw lastErr || new Error('No Ollama model available.');
-  }
-
-  throw new Error('No valid AI key found. Please check your Profile or .env file.');
+  throw new Error('No valid AI key provided. Please check your Profile or .env file.');
 }
 
 async function askJSON(prompt, maxTokens = 3000, customKey = null) {
@@ -164,10 +94,8 @@ function extractJSON(text) {
 }
 
 async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, customKey = null) {
-  const isGeminiKey = customKey ? (customKey.startsWith('AIza')) : (process.env.GEMINI_API_KEY && !process.env.OPENAI_API_KEY);
-  
-  if (isGeminiKey) {
-    const key = customKey || process.env.GEMINI_API_KEY;
+  const key = customKey || process.env.GEMINI_API_KEY;
+  if (key && (key.startsWith('AIza') || !process.env.OPENAI_API_KEY)) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${key}`;
     try {
       const res = await fetch(url, {
@@ -179,7 +107,7 @@ async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, 
           generationConfig: { maxOutputTokens: maxTokens }
         })
       });
-      if (!res.ok) throw new Error(`Gemini Error: ${res.status}`);
+      if (!res.ok) throw new Error(`Gemini Stream Error: ${res.status}`);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -207,7 +135,7 @@ async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, 
   const openaiKey = customKey || process.env.OPENAI_API_KEY;
   if (openaiKey) {
     try {
-      const client = getOpenAIClient(openaiKey);
+      const client = new OpenAI({ apiKey: openaiKey });
       const stream = await client.chat.completions.create({
         model: GPT_MODEL,
         messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: prompt }],
@@ -226,13 +154,7 @@ async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, 
       return stream;
     } catch (e) { onError && onError(e); return; }
   }
-
-  if (USE_OLLAMA) {
-    // Simplified Ollama stream for this version
-    onError && onError(new Error('Ollama streaming not implemented in this version.'));
-    return;
-  }
   onError && onError(new Error('No valid AI key provided.'));
 }
 
-module.exports = { askText, askJSON, streamText, MODEL, getHealth };
+module.exports = { askText, askJSON, streamText, MODEL: 'gemini-1.5-flash', getHealth };

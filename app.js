@@ -1,7 +1,7 @@
 /* ============================================================
    AdaptPractice — single-page learning environment
    Data lives in this browser (localStorage). AI answers come from
-   Claude through the artifact runtime's `sample` capability.
+   Gemini through the artifact runtime's `sample` capability.
    ============================================================ */
 
 /* ---------- storage ---------- */
