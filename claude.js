@@ -229,7 +229,7 @@ function streamTextOllama(prompt, { onDelta, onEnd, onError, maxTokens = 600 }) 
               onEnd && onEnd();
               return;
             }
-          } catch (err) {}
+          } catch (err) { }
         }
       }
 
@@ -277,7 +277,7 @@ async function streamTextGemini(prompt, { onDelta, onEnd, onError, maxTokens = 7
             const json = JSON.parse(trimmed.slice(5).trim());
             const delta = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
             if (delta && onDelta) onDelta(delta);
-          } catch (e) {}
+          } catch (e) { }
         }
       }
     }
