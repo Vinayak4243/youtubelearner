@@ -11,7 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
 
-const { askText, askJSON, streamText, MODEL, getHealth } = require('./claude');
+const { askText, askJSON, streamText, MODEL, getHealth } = require('./ai');
 
 const app = express();
 const PORT = process.env.PORT || 8787;

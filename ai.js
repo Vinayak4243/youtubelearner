@@ -1,0 +1,181 @@
+// server/ai.js
+//
+// The core AI engine for AdaptPractice.
+// Primary Provider: Google Gemini. Fallback: OpenAI GPT-4o.
+
+let OpenAI = null;
+try { OpenAI = require('openai'); } catch (e) {}
+
+const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+const GPT_MODEL = process.env.GPT_MODEL || 'gpt-4o';
+
+const SYSTEM_PROMPT = 'You are the AI engine for AdaptPractice, an adaptive learning platform. Your goal is to help students master concepts. Always follow the requested format (especially JSON) strictly.';
+
+/**
+ * Health check to see which provider is active
+ */
+function getHealth() {
+  if (process.env.GEMINI_API_KEY) return { ok: true, provider: 'gemini', model: GEMINI_MODEL };
+  if (process.env.OPENAI_API_KEY) return { ok: true, provider: 'openai', model: GPT_MODEL };
+  return { ok: false, provider: 'none', message: 'No AI API key configured in environment variables.' };
+}
+
+/**
+ * Core Gemini Text Generation
+ */
+async function askGemini(prompt, maxTokens = 1500, key) {
+  const finalKey = key || process.env.GEMINI_API_KEY;
+  if (!finalKey) throw new Error('GEMINI_API_KEY is missing.');
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${finalKey}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: maxTokens }
+    })
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    const err = new Error(`Gemini API Error ${res.status}: ${text}`);
+    if (res.status === 401 || res.status === 403) err.code = 'invalid_api_key';
+    throw err;
+  }
+
+  const data = await res.json();
+  const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!content) throw new Error('Gemini returned an empty response.');
+  return content.trim();
+}
+
+/**
+C-Level API for text completion
+ */
+async function askText(prompt, maxTokens = 1200, customKey = null) {
+  // 1. Try Gemini First (Priority)
+  const geminiKey = customKey && customKey.startsWith('AIza') ? customKey : process.env.GEMINI_API_KEY;
+  if (geminiKey) {
+    try {
+      return await askGemini(prompt, maxTokens, geminiKey);
+    } catch (e) {
+      console.error('Gemini failed, trying fallback...', e.message);
+    }
+  }
+
+  // 2. Fallback to OpenAI
+  const openaiKey = customKey || process.env.OPENAI_API_KEY;
+  if (openaiKey) {
+    try {
+      const client = new OpenAI({ apiKey: openaiKey });
+      const res = await client.chat.completions.create({
+        model: GPT_MODEL,
+        messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: prompt }],
+        max_tokens: maxTokens,
+      });
+      return res.choices[0].message.content.trim();
+    } catch (e) {
+      const err = new Error(e.message);
+      if (e.status === 401 || e.status === 403) err.code = 'invalid_api_key';
+      throw err;
+    }
+  }
+
+  throw new Error('No valid AI keys found. Please check your Profile or .env settings.');
+}
+
+/**
+ * JSON extraction and repair
+ */
+function extractJSON(text) {
+  let t = String(text || '').trim();
+  t = t.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  const start = Math.min(...['{', '['].map(c => { const i = t.indexOf(c); return i === -1 ? Infinity : i; }));
+  const end = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));
+  if (start !== Infinity && end !== -1) t = t.slice(start, end + 1);
+  return JSON.parse(t);
+}
+
+async function askJSON(prompt, maxTokens = 3000, customKey = null) {
+  const jsonPrompt = prompt + '\n\nReply with ONLY the JSON value. No prose, no markdown code fences.';
+  let raw = await askText(jsonPrompt, maxTokens, customKey);
+  try {
+    return extractJSON(raw);
+  } catch (e) {
+    const repaired = await askText('Your previous reply was not valid JSON. Return the corrected value as JSON only:\n' + raw, maxTokens, customKey);
+    return extractJSON(repaired);
+  }
+}
+
+/**
+ * Streaming support
+ */
+async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, customKey = null) {
+  const geminiKey = customKey && customKey.startsWith('AIza') ? customKey : process.env.GEMINI_API_KEY;
+  
+  if (geminiKey) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${geminiKey}`;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: maxTokens }
+        })
+      });
+      if (!res.ok) throw new Error(`Gemini Stream Error: ${res.status}`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (line.trim().startsWith('data:')) {
+            try {
+              const json = JSON.parse(line.trim().slice(5));
+              const delta = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+              onDelta && onDelta(delta);
+            } catch(e){}
+          }
+        }
+      }
+      onEnd && onEnd();
+    } catch (e) { onError && onError(e); }
+    return;
+  }
+
+  const openaiKey = customKey || process.env.OPENAI_API_KEY;
+  if (openaiKey) {
+    try {
+      const client = new OpenAI({ apiKey: openaiKey });
+      const stream = await client.chat.completions.create({
+        model: GPT_MODEL,
+        messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: prompt }],
+        max_tokens: maxTokens,
+        stream: true,
+      });
+      (async () => {
+        try {
+          for await (const chunk of stream) {
+            const delta = chunk.choices[0]?.delta?.content || '';
+            onDelta && onDelta(delta);
+          }
+          onEnd && onEnd();
+        } catch (e) { onError && onError(e); }
+      })();
+      return stream;
+    } catch (e) { onError && onError(e); return; }
+  }
+  onError && onError(new Error('No valid AI key provided for streaming.'));
+}
+
+module.exports = { askText, askJSON, streamText, MODEL: GEMINI_MODEL, getHealth };
