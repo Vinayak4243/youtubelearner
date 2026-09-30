@@ -11,7 +11,7 @@
     "start:claude": "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} CLAUDE_MODEL=${CLAUDE_MODEL:-claude-sonnet-5} node server.js"
   },
   "engines": {
-    "node": "20.x"
+    "node": "22.x"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
