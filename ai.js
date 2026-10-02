@@ -7,7 +7,8 @@
 let OpenAI = null;
 try { OpenAI = require('openai'); } catch (e) {}
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash-lite';
 const GPT_MODEL = process.env.GPT_MODEL || 'gpt-4o';
 
 /**
@@ -72,11 +73,11 @@ function getHealth() {
 /**
  * Core Gemini Text Generation
  */
-async function askGemini(prompt, maxTokens = 2000, key) {
+async function askGemini(prompt, maxTokens = 2000, key, model = GEMINI_MODEL) {
   const finalKey = key || process.env.GEMINI_API_KEY;
   if (!finalKey) throw new Error('GEMINI_API_KEY is missing.');
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${finalKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${finalKey}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -95,6 +96,7 @@ async function askGemini(prompt, maxTokens = 2000, key) {
     const text = await res.text();
     const err = new Error(`Gemini API Error ${res.status}: ${text}`);
     if (res.status === 401 || res.status === 403) err.code = 'invalid_api_key';
+    else if (res.status === 429 || res.status === 503 || /overload|high demand/i.test(text)) err.code = 'provider_overloaded';
     throw err;
   }
 
@@ -109,11 +111,21 @@ async function askGemini(prompt, maxTokens = 2000, key) {
  */
 async function askText(prompt, maxTokens = 1200, customKey = null) {
   const geminiKey = customKey && customKey.startsWith('AIza') ? customKey : process.env.GEMINI_API_KEY;
+  let geminiError = null;
   if (geminiKey) {
     try {
       return await askGemini(prompt, maxTokens, geminiKey);
     } catch (e) {
-      console.error('Gemini failed, trying fallback...', e.message);
+      geminiError = e;
+      console.error('Gemini request failed:', e.code || e.status || 'unknown error');
+    }
+  }
+  if (geminiError && geminiError.code === 'provider_overloaded' && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
+    try {
+      return await askGemini(prompt, maxTokens, geminiKey, GEMINI_FALLBACK_MODEL);
+    } catch (fallbackError) {
+      console.error('Gemini fallback request failed:', fallbackError.code || fallbackError.status || 'unknown error');
+      geminiError = fallbackError;
     }
   }
 
@@ -134,6 +146,7 @@ async function askText(prompt, maxTokens = 1200, customKey = null) {
     }
   }
 
+  if (geminiError) throw geminiError;
   throw new Error('No valid AI keys found. Please check your Profile or .env settings.');
 }
 
@@ -178,26 +191,40 @@ async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, 
           generationConfig: { maxOutputTokens: maxTokens }
         })
       });
-      if (!res.ok) throw new Error(`Gemini Stream Error: ${res.status}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const message = data.error?.message || `Gemini stream request failed (${res.status}).`;
+        const err = new Error(message);
+        if (res.status === 401 || res.status === 403) err.code = 'invalid_api_key';
+        else if (res.status === 404) err.code = 'invalid_model';
+        else if (res.status === 429 || res.status === 503 || /overload|high demand/i.test(message)) err.code = 'provider_overloaded';
+        throw err;
+      }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      const emitEvent = (event) => {
+        const data = event.split(/\r?\n/)
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).trim())
+          .join('\n');
+        if (!data || data === '[DONE]') return;
+        const payload = JSON.parse(data);
+        const parts = payload.candidates?.[0]?.content?.parts || [];
+        for (const part of parts) {
+          if (part.text) onDelta && onDelta(part.text);
+        }
+      };
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream:true });
-        const lines = buffer.split('\n\n'); buffer = lines.pop();
-        for (const line of lines){
-          if (!line.startsWith('data: ')) continue;
-          const payload = line.slice(6);
-          if (payload === '[DONE]') { resolve({ text: full }); return; }
-          try {
-            const j = JSON.parse(payload);
-            if (j.delta) { full += j.delta; opts.onText({ text: full }); }
-            if (j.error) { reject({ code:'upstream_error', message:j.error }); return; }
-          } catch(e) {}
-        }
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop();
+        for (const event of events) emitEvent(event);
       }
+      buffer += decoder.decode();
+      if (buffer.trim()) emitEvent(buffer);
       onEnd && onEnd();
     } catch (e) { onError && onError(e); }
     return;

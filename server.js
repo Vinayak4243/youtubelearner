@@ -49,6 +49,12 @@ function bad(res, status, message, code) {
 
 function aiFailure(err) {
   const message = String((err && err.message) || '');
+  if (err && err.code === 'invalid_api_key') {
+    return { status: 401, code: 'invalid_api_key', message: 'Gemini rejected the credential. Set GEMINI_API_KEY to an API key from Google AI Studio, not an OAuth access token, then restart or redeploy.' };
+  }
+  if (err && err.code === 'provider_overloaded' || err && err.status === 503 || /overload|high demand/i.test(message)) {
+    return { status: 503, code: 'provider_overloaded', message: 'Gemini is experiencing high demand. Please retry in a moment.' };
+  }
   if (/credit balance is too low|purchase credits|plans?\s*&?\s*billing/i.test(message)) {
     return { status: 402, code: 'credits_exhausted', message: 'Your Google Gemini API account has no available credit. Add credit in Google AI Studio → Plans & Billing, then try again.' };
   }
@@ -56,10 +62,10 @@ function aiFailure(err) {
     return { status: 400, code: 'missing_api_key', message: 'No AI API key is configured. Add ANTHROPIC_API_KEY or GEMINI_API_KEY in Vercel environment variables or enter it in Settings.' };
   }
   if (/authentication_error|invalid.*api key|api[_ ]key|401|403/i.test(message)) {
-    return { status: 401, code: 'invalid_api_key', message: 'The AI API key was rejected. Please verify your API key.' };
+    return { status: 401, code: 'invalid_api_key', message: 'Gemini rejected the credential. Set GEMINI_API_KEY to an API key from Google AI Studio, not an OAuth access token, then restart or redeploy.' };
   }
   if (/not_found_error|model.*not found|unknown model/i.test(message)) {
-    return { status: 400, code: 'invalid_model', message: 'The configured AI model is unavailable. Update the model name in your environment.' };
+    return { status: 400, code: 'invalid_model', message: 'The configured Gemini model is unavailable. Set GEMINI_MODEL to a supported model such as gemini-3.5-flash, or remove the override, then restart or redeploy.' };
   }
   if (/overloaded_error|overloaded/i.test(message)) {
     return { status: 529, code: 'provider_overloaded', message: 'The AI provider is temporarily overloaded. Please retry in a moment.' };
@@ -69,7 +75,8 @@ function aiFailure(err) {
 
 function asyncRoute(fn) {
   return (req, res) => fn(req, res).catch(err => {
-    console.error(err);
+    if (err && err.code === 'invalid_api_key') console.error('AI provider rejected the configured API key.');
+    else console.error(err);
     const failure = aiFailure(err);
     bad(res, failure.status, failure.message, failure.code);
   });
@@ -108,10 +115,62 @@ const YT_DLP_PATH = YT_DLP_CANDIDATES.find(candidate => {
   try { return fs.existsSync(candidate); } catch (e) { return false; }
 }) || (process.env.VERCEL ? null : 'yt-dlp');
 
+async function youtubeApiRequest(resource, params) {
+  const url = new URL('https://www.googleapis.com/youtube/v3/' + resource);
+  Object.entries({ ...params, key: process.env.YOUTUBE_API_KEY }).forEach(([key, value]) => url.searchParams.set(key, value));
+  const response = await fetch(url);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error?.message || 'The YouTube Data API request failed.');
+  return data;
+}
+
+function durationSeconds(isoDuration) {
+  const match = String(isoDuration || '').match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!match) return '';
+  return (Number(match[1] || 0) * 3600) + (Number(match[2] || 0) * 60) + Number(match[3] || 0);
+}
+
+async function getPlaylistItemsFromApi(url) {
+  if (!process.env.YOUTUBE_API_KEY) throw new Error('Automated playlist fetching requires YOUTUBE_API_KEY. Paste the lesson titles directly if no key is configured.');
+  let playlistId;
+  try { playlistId = new URL(url).searchParams.get('list'); } catch (e) {}
+  if (!playlistId) throw new Error('That URL does not contain a YouTube playlist ID.');
+
+  const items = [];
+  let pageToken = '';
+  let pages = 0;
+  do {
+    const page = await youtubeApiRequest('playlistItems', {
+      part: 'snippet,contentDetails', maxResults: '50', playlistId,
+      ...(pageToken ? { pageToken } : {})
+    });
+    for (const entry of page.items || []) {
+      const videoId = entry.contentDetails?.videoId || entry.snippet?.resourceId?.videoId;
+      const title = entry.snippet?.title;
+      if (!videoId || !title || title === 'Private video' || title === 'Deleted video') continue;
+      items.push({ index: Number(entry.snippet.position) + 1 || items.length + 1, title, id: videoId, duration: '', url: 'https://www.youtube.com/watch?v=' + videoId });
+    }
+    pageToken = page.nextPageToken || '';
+    pages++;
+  } while (pageToken && pages < 20);
+
+  if (!items.length) throw new Error('No videos were found in that playlist.');
+  for (let offset = 0; offset < items.length; offset += 50) {
+    const batch = items.slice(offset, offset + 50);
+    const details = await youtubeApiRequest('videos', {
+      part: 'contentDetails', id: batch.map(item => item.id).join(',')
+    });
+    const durations = new Map((details.items || []).map(video => [video.id, durationSeconds(video.contentDetails?.duration)]));
+    batch.forEach(item => { item.duration = durations.get(item.id) ?? ''; });
+  }
+  return items;
+}
+
 function getPlaylistItems(url) {
   const cleanUrl = sanitizeUrl(url);
   return new Promise((resolve, reject) => {
     if (!YT_DLP_PATH) {
+      if (process.env.YOUTUBE_API_KEY) return resolve(getPlaylistItemsFromApi(cleanUrl));
       return reject(new Error('Automated playlist fetching requires yt-dlp. On the web version, please paste your playlist video titles directly into the box.'));
     }
     execFile(YT_DLP_PATH, ['--flat-playlist', '--print', '%(playlist_index)s|%(title)s|%(id)s|%(duration)s|%(url)s', cleanUrl], { timeout: 30000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
@@ -187,13 +246,13 @@ app.post(['/api/ai/stream', '/ai/stream'], (req, res) => {
       onError: (err) => {
         console.error('stream error:', err.message || err);
         const failure = aiFailure(err);
-        finish(`data: ${JSON.stringify({ error: failure.message })}\n\n`);
+        finish(`data: ${JSON.stringify({ error: failure.message, code: failure.code })}\n\n`);
       }
     }, customKey);
   } catch (err) {
     console.error(err);
     const failure = aiFailure(err);
-    finish(`data: ${JSON.stringify({ error: failure.message })}\n\n`);
+    finish(`data: ${JSON.stringify({ error: failure.message, code: failure.code })}\n\n`);
   }
 });
 

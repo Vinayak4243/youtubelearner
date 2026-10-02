@@ -210,8 +210,8 @@ const AI_COPY = {
   capability_removed:'AI is unavailable in this view.',
   rate_limited:'Too many AI requests. Wait a minute and try again.',
   credits_exhausted:'Your Anthropic API account has no available credit. Add credit in Anthropic Console → Plans & Billing, then retry.',
-  invalid_api_key:'The API key was rejected. Please check your API key in Profile.',
-  invalid_model:'The configured AI model is unavailable.',
+  invalid_api_key:'Gemini rejected the credential. Use a Google AI Studio API key, not an OAuth access token, in Profile or GEMINI_API_KEY.',
+  invalid_model:'The Gemini model is unavailable. Set GEMINI_MODEL to a supported model such as gemini-3.5-flash, then restart or redeploy.',
   provider_overloaded:'The AI provider is temporarily overloaded. Please retry in a moment.',
   session_expired:'Sign in to your AI provider again, then retry.',
   refused:'The AI model declined this request. Try rephrasing your source or question.',
@@ -401,14 +401,15 @@ function body(){
 function rail(){
   const due = D.courses.reduce((n,c) => n + weakList(c).filter(x => prioBand(priority(x))==='high').length, 0);
   const item = (v,g,label,count) =>
-    '<button class="nav" data-act="go" data-view="'+v+'" aria-current="'+(S.view===v)+'"><span class="g">'+g+'</span>'+label+
+    '<button class="nav" data-act="go" data-view="'+v+'" aria-current="'+(S.view===v)+'"><span class="g">'+g+'</span><span class="label">'+label+'</span>'+
     (count ? '<span class="ct">'+count+'</span>' : '') + '</button>';
   const statusText = aiChecked ? (SAMPLE ? 'AI live' : 'AI offline') : 'Checking AI';
+  const moreViews = ['weakness','revision','roadmap','progress','history','shield','profile'];
   return '<nav class="rail">'
     + '<div class="brand" data-act="go" data-view="dash"><b>AdaptPractice</b><i>BETA</i></div>'
     + item('dash','◇','Dashboard')
-    + '<button class="nav" data-act="go" data-view="course" data-clear="1" aria-current="'+(S.view==='course')+'"><span class="g">▤</span>My courses</button>'
-    + '<button class="nav" data-act="new-course"><span class="g">+</span>New course</button>'
+    + '<button class="nav" data-act="go" data-view="course" data-clear="1" aria-current="'+(S.view==='course')+'"><span class="g">▤</span><span class="label">My courses</span></button>'
+    + '<button class="nav" data-act="new-course"><span class="g">+</span><span class="label">New course</span></button>'
     + '<div class="railsep"></div>'
     + item('work','✎','Practice')
     + item('weakness','◈','Weakness matrix', due)
@@ -420,6 +421,8 @@ function rail(){
     + item('shield','⛨','Focus shield')
     + item('profile','◉','Profile')
     + '<div class="railfoot"><span class="live-pill"><span class="live-dot"></span>' + statusText + '</span><br>' + (aiChecked ? (SAMPLE ? 'AI backend is connected. AI features are live.' : 'AI is unavailable in this view — AI features are hidden.') : 'Checking AI…') + '</div>'
+    + '<details class="mobile-more"><summary class="nav" aria-label="More sections"><span class="g">•••</span><span class="label">More</span></summary>'
+    + '<div class="mobile-menu">' + moreViews.map(v => item(v, ({weakness:'◈',revision:'↻',roadmap:'⌖',progress:'▦',history:'☰',shield:'⛨',profile:'◉'})[v], ({weakness:'Weakness matrix',revision:'Revision',roadmap:'My roadmap',progress:'Progress',history:'Learning history',shield:'Focus shield',profile:'Profile'})[v], v==='weakness'?due:0)).join('') + '</div></details>'
     + '</nav>';
 }
 
@@ -718,7 +721,7 @@ function vLesson(){
   const a = (c.assignments||[]).find(x => x.id === S.work);
 
   let embedSrc = null;
-  const common = 'rel=0&modestbranding=1&enablejsapi=1&origin=' + encodeURIComponent(location.origin) + (lesson.at ? '&start='+Math.floor(lesson.at) : '') + '&autoplay=1&mute=1&playsinline=1';
+  const common = 'rel=0&modestbranding=1&controls=1&enablejsapi=1&origin=' + encodeURIComponent(location.origin) + (lesson.at ? '&start='+Math.floor(lesson.at) : '') + '&playsinline=1';
   const embedBase = 'https://www.youtube.com/embed';
   if (vid) embedSrc = embedBase + '/' + vid + '?' + common;
   else if (src.type === 'playlist' && listId) embedSrc = embedBase + '/videoseries?list=' + encodeURIComponent(listId) + '&index=' + (lesson.index||1) + '&' + common;
@@ -730,8 +733,8 @@ function vLesson(){
   let stage;
   if (vid || (src.type === 'playlist' && listId)){
     stage = '<div class="stage"><iframe id="ytframe" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" loading="lazy" src="'+esc(embedSrc)+'" onerror="this.style.display=\'none\'; var note=this.parentNode.parentNode.querySelector(\'#playnote\'); if(note){ note.classList.add(\'error\'); var txt=note.querySelector(\'span\'); if(txt){ txt.textContent=\'This video cannot be embedded in the current browser or network. Open it on YouTube instead.\'; } }"></iframe></div>'
-      + '<div class="playnote" id="playnote"><span>Embedded video is live. If it does not appear, the network is blocking the player.</span>'
-      + '<a href="'+esc(watchUrl)+'" target="_blank" rel="noopener">Open lesson ' + (lesson.index||1) + ' on YouTube</a>'
+      + '<div class="playnote" id="playnote"><span>Tap the video to play. If playback is blocked here, watch it on YouTube.</span>'
+      + '<a class="btn sec sm" href="'+esc(watchUrl)+'" target="_blank" rel="noopener">Watch on YouTube</a>'
       + '<span class="dim">Practice, the timestamp box and everything else on this page keep working.</span></div>';
   } else if (vid || (src.type === 'playlist' && listId)){
     const thumb = vid ? 'https://img.youtube.com/vi/' + vid + '/hqdefault.jpg' : 'https://img.youtube.com/vi/' + ytVideoId(src.url || '') + '/hqdefault.jpg';
