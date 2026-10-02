@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { after, before, test } = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
+const { getSupabaseConfig } = require('../server/auth');
 
 process.env.GEMINI_API_KEY = 'test-server-key';
 process.env.GEMINI_MODEL = 'test-model';
@@ -120,6 +121,45 @@ test('Auth config reports availability without returning the anon key', async ()
   assert.equal(response.status, 200);
   assert.equal(body.configured, true);
   assert.equal(Object.hasOwn(body, 'anonKey'), false);
+});
+
+test('Auth config accepts the Supabase publishable key without exposing it', async () => {
+  const originalAnonKey = process.env.SUPABASE_ANON_KEY;
+  const originalPublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY;
+  process.env.SUPABASE_ANON_KEY = '';
+  process.env.SUPABASE_PUBLISHABLE_KEY = 'test-publishable-key';
+
+  try {
+    const response = await fetch(`${baseUrl}/api/auth/config`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.configured, true);
+    assert.equal(Object.hasOwn(body, 'anonKey'), false);
+    assert.equal(Object.hasOwn(body, 'publishableKey'), false);
+  } finally {
+    if (originalAnonKey === undefined) delete process.env.SUPABASE_ANON_KEY;
+    else process.env.SUPABASE_ANON_KEY = originalAnonKey;
+    if (originalPublishableKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    else process.env.SUPABASE_PUBLISHABLE_KEY = originalPublishableKey;
+  }
+});
+
+test('Supabase REST endpoint URLs are normalized to the project URL', () => {
+  const originalUrl = process.env.SUPABASE_URL;
+  process.env.SUPABASE_URL = 'https://supabase.test/rest/v1/';
+  try {
+    assert.equal(getSupabaseConfig().url, 'https://supabase.test');
+  } finally {
+    if (originalUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = originalUrl;
+  }
+});
+
+test('an anonymous auth session request reports no session rather than a login failure', async () => {
+  const response = await fetch(`${baseUrl}/api/auth/session`);
+  const body = await response.json();
+  assert.equal(response.status, 401);
+  assert.equal(body.code, 'not_authenticated');
 });
 
 test('snapshot reads require an authenticated user', async () => {

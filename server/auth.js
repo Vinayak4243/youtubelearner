@@ -1,8 +1,8 @@
 const { createClient } = require('@supabase/supabase-js');
 
 const getSupabaseConfig = () => ({
-  url: process.env.SUPABASE_URL || '',
-  anonKey: process.env.SUPABASE_ANON_KEY || ''
+  url: (process.env.SUPABASE_URL || '').trim().replace(/\/rest\/v1\/?$/i, ''),
+  anonKey: process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || ''
 });
 
 const hasSupabaseConfig = () => {

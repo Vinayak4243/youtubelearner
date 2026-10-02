@@ -43,6 +43,42 @@ AdaptPractice is a sophisticated learning platform that transforms any YouTube v
    node server.js
    ```
 
+### Authentication and Supabase
+
+Copy `.env.example` to `.env` and set `SUPABASE_URL` and
+`SUPABASE_PUBLISHABLE_KEY` from **Supabase Dashboard → Project Settings → API**.
+Use the Project URL (the `https://<project-ref>.supabase.co` origin), not the
+REST endpoint ending in `/rest/v1/`.
+The publishable key (the `sb_publishable_...` key) is used only by server
+functions; the browser does not receive a Supabase key. `SUPABASE_ANON_KEY` is
+also accepted for older projects. Do not set or use a service-role/secret key
+for this app.
+
+Set `AUTH_SITE_URL` to the canonical site origin, with no trailing slash. For
+the production deployment, use:
+
+```env
+AUTH_SITE_URL=https://youtubelearner-five.vercel.app
+```
+
+In Vercel, add `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and
+`AUTH_SITE_URL` under **Project → Settings → Environment Variables** for every
+environment that should support accounts, then redeploy. In Supabase, enable
+the **Email** auth provider, set the Site URL to the same origin, and add
+`https://youtubelearner-five.vercel.app/**` to the allowed redirect URLs.
+The app returns from email confirmation at `/?auth=verify` and password reset
+at `/?auth=reset`.
+
+The migration in
+[`supabase/migrations/202610020001_adaptpractice.sql`](./supabase/migrations/202610020001_adaptpractice.sql)
+creates the learner tables, including `learner_snapshots` and
+`user_rate_limits`, and enables per-user row-level security policies. To apply
+it in Supabase, open **SQL Editor → New query**, paste the complete contents
+of that migration file, and run it against the intended project. If it has
+already been applied, do not run it again just to configure authentication.
+Verify that `learner_snapshots` and `user_rate_limits` exist and that RLS is
+enabled before testing account data sync.
+
 ## 📈 Mastery Logic
 The app uses an evidence-based update system. Mastery is not a simple percentage but a weighted score:
 - **Correct Answer**: Increases mastery significantly.

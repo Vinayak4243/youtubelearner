@@ -198,6 +198,23 @@ async function authRequest(path, options){
   if (!response.ok) throw Object.assign(new Error(body.error || 'Authentication request failed.'), { code:body.code || 'auth_error', status:response.status });
   return body;
 }
+function authErrorMessage(error){
+  const messages = {
+    auth_unavailable:'Account sign-in is temporarily unavailable. Please try again later.',
+    database_unavailable:'Your learning data could not be loaded. Please try again later.',
+    invalid_email:'Enter a valid email address.',
+    invalid_password:'Use a password between 10 and 128 characters.',
+    missing_credentials:'Enter your email and password.',
+    invalid_credentials:'Email or password is incorrect.',
+    session_expired:'Your session expired. Sign in again.',
+    invalid_confirmation:'That confirmation link is invalid or expired.',
+    invalid_reset_code:'That reset link is invalid or expired.',
+    reset_email_failed:'Could not send a password reset email. Please try again later.',
+    password_reset_failed:'Could not update your password. Request a new reset link.',
+    rate_limited:'Too many attempts. Please wait a little and try again.'
+  };
+  return messages[error && error.code] || 'Authentication is temporarily unavailable. Please try again later.';
+}
 function normalizeSnapshot(snapshot){
   const next = Object.assign(blank(), snapshot || {});
   next.behaviour = Object.assign(blank().behaviour, next.behaviour || {});
@@ -282,7 +299,7 @@ async function loadAuthState(){
     await restoreAuthenticatedUser();
   } catch(error){
     AUTH.user = null;
-    AUTH.error = error.status === 401 ? '' : error.message;
+    AUTH.error = error.status === 401 ? '' : authErrorMessage(error);
     if (AUTH.configured) S.view = 'landing';
   } finally {
     AUTH.loading = false;
@@ -318,7 +335,7 @@ async function submitAuth(){
       AUTH.mode = 'login';
       success = true;
     }
-  } catch(error){ AUTH.error = error.message; }
+  } catch(error){ AUTH.error = authErrorMessage(error); }
   finally {
     AUTH.busy = false;
     if (success){ AUTH.form.password = ''; AUTH.form.confirmPassword = ''; }
@@ -332,7 +349,7 @@ async function persistSnapshot(){
     await authRequest('/api/learner/snapshot', { method:'PUT', body:JSON.stringify({ payload:D }) });
     AUTH.syncStatus = 'saved'; AUTH.syncError = '';
     try { localStorage.removeItem(KEY); } catch(e){}
-  } catch(error){ AUTH.syncStatus = 'error'; AUTH.syncError = error.message; }
+  } catch(error){ AUTH.syncStatus = 'error'; AUTH.syncError = authErrorMessage(error); }
   if (booted) render();
 }
 function flushSnapshotSave(){
@@ -357,7 +374,7 @@ async function finishLegacyImport(importData){
     await authRequest('/api/learner/snapshot', { method:'PUT', body:JSON.stringify({ payload:D }) });
     try { localStorage.removeItem(KEY); } catch(e){}
     AUTH.needsImport = false; AUTH.syncStatus = 'saved'; S.view = D.profile ? 'dash' : 'onboard';
-  } catch(error){ AUTH.error = error.message; }
+  } catch(error){ AUTH.error = authErrorMessage(error); }
   finally { AUTH.busy = false; render(); }
 }
 async function fetchPlaylistItems(url){
@@ -632,7 +649,7 @@ function vLanding(){
   + '<li class="win">Every mistake is classified and stored</li><li class="win">Tomorrow\'s questions come from today\'s mistakes</li></ol></div></div>'
   + '<div class="row"><button class="btn" style="background:#6BBFA5;color:#08211B;border-color:#6BBFA5;padding:12px 22px" data-act="start">Start learning</button>'
   + '<span style="color:var(--onink-2);font-size:.85rem">Your courses sync to your private account.</span></div>'
-  + (AUTH.error ? '<div class="note bad" role="alert" style="margin-top:18px">'+esc(AUTH.error)+'</div>' : (!AUTH.configured ? '<div class="note warn" role="status" style="margin-top:18px">Account service is not configured. The site owner must set SUPABASE_URL and SUPABASE_ANON_KEY before sign-in is available.</div>' : ''))
+  + (AUTH.error ? '<div class="note bad" role="alert" style="margin-top:18px">'+esc(AUTH.error)+'</div>' : (!AUTH.configured ? '<div class="note warn" role="status" style="margin-top:18px">Accounts are not available yet. Please try again later.</div>' : ''))
   + '<div class="landgrid">'
   + card4('Say where you are, and where you\'re going','A commerce student aiming at CAT and an engineering student aiming at a hackathon get different questions from the same page of the same book.')
   + card4('“I don\'t understand this”','Press it at 18:42 and you get an explanation of that idea — simply, as an example, as an analogy, step by step — not a summary of the whole video.')
@@ -643,7 +660,7 @@ function vLanding(){
 const card4 = (h,p) => '<div><h4>'+esc(h)+'</h4><p>'+esc(p)+'</p></div>';
 
 function vAuth(){
-  if (!AUTH.configured) return '<main class="main" style="max-width:620px;margin:5vh auto"><div class="brand" data-act="auth-back"><b>AdaptPractice</b><i>BETA</i></div><div class="sheet pad"><h2>Accounts are not configured</h2><p class="muted" style="margin-top:10px">The site owner must set SUPABASE_URL and SUPABASE_ANON_KEY and apply the database migration before accounts are available.</p><button class="btn sec" data-act="auth-back" style="margin-top:14px">Back</button></div></main>';
+  if (!AUTH.configured) return '<main class="main" style="max-width:620px;margin:5vh auto"><div class="brand" data-act="auth-back"><b>AdaptPractice</b><i>BETA</i></div><div class="sheet pad"><h2>Accounts are not available yet</h2><p class="muted" style="margin-top:10px">Please try again later.</p><button class="btn sec" data-act="auth-back" style="margin-top:14px">Back</button></div></main>';
   const title = AUTH.mode==='signup' ? 'Create your account' : AUTH.mode==='forgot' ? 'Reset your password' : AUTH.mode==='reset' ? 'Choose a new password' : 'Welcome back';
   const submit = AUTH.mode==='signup' ? 'Create account' : AUTH.mode==='forgot' ? 'Send reset link' : AUTH.mode==='reset' ? 'Update password' : 'Sign in';
   let fields = '';
@@ -1566,7 +1583,7 @@ document.addEventListener('click', async e => {
   switch(a){
     case 'start': AUTH.mode = 'signup'; AUTH.form = {}; AUTH.error = ''; AUTH.notice = ''; S.view = 'auth'; render(); break;
     case 'auth-back': S.view = AUTH.user ? 'dash' : 'landing'; render(); break;
-    case 'auth-mode': AUTH.mode = t.dataset.mode; AUTH.error = ''; AUTH.notice = ''; render(); break;
+    case 'auth-mode': AUTH.mode = t.dataset.mode; AUTH.error = ''; AUTH.notice = ''; if (!AUTH.user) S.view = 'auth'; render(); break;
     case 'logout': {
       if (AUTH.syncStatus === 'pending') await syncPromise;
       if (AUTH.syncStatus === 'error') { AUTH.error = AUTH.syncError || 'Your latest changes could not be saved. Try again before signing out.'; toast(AUTH.error, 6000); render(); break; }
