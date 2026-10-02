@@ -10,6 +10,8 @@ try { OpenAI = require('openai'); } catch (e) {}
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash-lite';
 const GPT_MODEL = process.env.GPT_MODEL || 'gpt-4o';
+const REQUEST_TIMEOUT_MS = 30000;
+const STATUS_TIMEOUT_MS = 8000;
 
 /**
  * MASTER PROMPT SYSTEM ROLE
@@ -65,9 +67,72 @@ const TEMPLATES = {
  * Health check to see which provider is active
  */
 function getHealth() {
-  if (process.env.GEMINI_API_KEY) return { ok: true, provider: 'gemini', model: GEMINI_MODEL };
-  if (process.env.OPENAI_API_KEY) return { ok: true, provider: 'openai', model: GPT_MODEL };
-  return { ok: false, provider: 'none', message: 'No AI API key configured.' };
+  return { ok: true, service: 'available' };
+}
+
+function geminiError(status, body) {
+  const message = body?.error?.message || `Gemini request failed (${status}).`;
+  const error = new Error(message);
+  if (status === 401 || status === 403) error.code = 'invalid_api_key';
+  else if (status === 404 || /model.*not found|unknown model/i.test(message)) error.code = 'invalid_model';
+  else if (status === 402 || /quota|credit balance|billing/i.test(message)) error.code = 'credits_exhausted';
+  else if (status === 429 || status === 503 || /overload|high demand/i.test(message)) error.code = 'provider_overloaded';
+  else if (status >= 500) error.code = 'provider_unavailable';
+  return error;
+}
+
+async function checkGeminiModel(model, key) {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:countTokens`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+    body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'health check' }] }] }),
+    signal: AbortSignal.timeout(STATUS_TIMEOUT_MS)
+  });
+  if (!response.ok) throw geminiError(response.status, await response.json().catch(() => ({})));
+}
+
+async function checkProviderStatus() {
+  if (process.env.GEMINI_API_KEY) {
+    for (const model of [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]) {
+      try {
+        await checkGeminiModel(model, process.env.GEMINI_API_KEY);
+        return { ready: true, provider: 'gemini', model };
+      } catch (error) {
+        if (!['provider_overloaded', 'invalid_model'].includes(error.code)) {
+          return { ready: false, provider: 'gemini', model, code: error.code || 'provider_unavailable' };
+        }
+      }
+    }
+    return { ready: false, provider: 'gemini', model: GEMINI_MODEL, code: 'invalid_model' };
+  }
+  if (process.env.OPENAI_API_KEY && OpenAI) {
+    try {
+      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: STATUS_TIMEOUT_MS, maxRetries: 0 });
+      await client.models.retrieve(GPT_MODEL);
+      return { ready: true, provider: 'openai', model: GPT_MODEL };
+    } catch (error) {
+      return { ready: false, provider: 'openai', model: GPT_MODEL, code: error.status === 401 ? 'invalid_api_key' : 'invalid_model' };
+    }
+  }
+  return { ready: false, provider: 'none', code: 'missing_api_key' };
+}
+
+async function requestGemini(prompt, maxTokens, key, model) {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7, responseMimeType: 'application/json' }
+    }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  });
+  if (!response.ok) throw geminiError(response.status, await response.json().catch(() => ({})));
+  const data = await response.json();
+  const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!content) throw Object.assign(new Error('Gemini returned an empty response.'), { code: 'empty_completion' });
+  return content.trim();
 }
 
 /**
@@ -76,34 +141,7 @@ function getHealth() {
 async function askGemini(prompt, maxTokens = 2000, key, model = GEMINI_MODEL) {
   const finalKey = key || process.env.GEMINI_API_KEY;
   if (!finalKey) throw new Error('GEMINI_API_KEY is missing.');
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${finalKey}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { 
-        maxOutputTokens: maxTokens,
-        temperature: 0.7,
-        responseMimeType: "application/json"
-      }
-    })
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    const err = new Error(`Gemini API Error ${res.status}: ${text}`);
-    if (res.status === 401 || res.status === 403) err.code = 'invalid_api_key';
-    else if (res.status === 429 || res.status === 503 || /overload|high demand/i.test(text)) err.code = 'provider_overloaded';
-    throw err;
-  }
-
-  const data = await res.json();
-  const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!content) throw new Error('Gemini returned an empty response.');
-  return content.trim();
+  return requestGemini(prompt, maxTokens, finalKey, model);
 }
 
 /**
@@ -120,7 +158,7 @@ async function askText(prompt, maxTokens = 1200, customKey = null) {
       console.error('Gemini request failed:', e.code || e.status || 'unknown error');
     }
   }
-  if (geminiError && geminiError.code === 'provider_overloaded' && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
+  if (geminiError && ['provider_overloaded', 'invalid_model'].includes(geminiError.code) && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
     try {
       return await askGemini(prompt, maxTokens, geminiKey, GEMINI_FALLBACK_MODEL);
     } catch (fallbackError) {
@@ -176,29 +214,25 @@ async function askJSON(prompt, maxTokens = 3000, customKey = null) {
 /**
  * Streaming support
  */
-async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, customKey = null) {
+async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600, signal: requestSignal }, customKey = null, model = GEMINI_MODEL) {
   const geminiKey = customKey && customKey.startsWith('AIza') ? customKey : process.env.GEMINI_API_KEY;
   
   if (geminiKey) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${geminiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
           generationConfig: { maxOutputTokens: maxTokens }
-        })
+        }),
+        signal: requestSignal ? AbortSignal.any([requestSignal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        const message = data.error?.message || `Gemini stream request failed (${res.status}).`;
-        const err = new Error(message);
-        if (res.status === 401 || res.status === 403) err.code = 'invalid_api_key';
-        else if (res.status === 404) err.code = 'invalid_model';
-        else if (res.status === 429 || res.status === 503 || /overload|high demand/i.test(message)) err.code = 'provider_overloaded';
-        throw err;
+        throw geminiError(res.status, data);
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -226,7 +260,12 @@ async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, 
       buffer += decoder.decode();
       if (buffer.trim()) emitEvent(buffer);
       onEnd && onEnd();
-    } catch (e) { onError && onError(e); }
+    } catch (error) {
+      if (model === GEMINI_MODEL && ['provider_overloaded', 'invalid_model'].includes(error.code) && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
+        return streamText(prompt, { onDelta, onEnd, onError, maxTokens, signal: requestSignal }, geminiKey, GEMINI_FALLBACK_MODEL);
+      }
+      onError && onError(error);
+    }
     return;
   }
 
@@ -255,4 +294,4 @@ async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600 }, 
   onError && onError(new Error('No valid AI key provided for streaming.'));
 }
 
-module.exports = { askText, askJSON, streamText, TEMPLATES, MODEL: GEMINI_MODEL, getHealth };
+module.exports = { askText, askJSON, streamText, TEMPLATES, MODEL: GEMINI_MODEL, getHealth, checkProviderStatus };

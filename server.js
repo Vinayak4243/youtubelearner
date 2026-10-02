@@ -10,21 +10,25 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
+const { createClient } = require('@supabase/supabase-js');
+const { authenticateRequest, hasSupabaseConfig, getSupabaseConfig, sessionCookies, cookieValues, createUserClient } = require('./server/auth');
 
-const { askText, askJSON, streamText, MODEL, getHealth } = require('./ai');
+const { askText, askJSON, streamText, MODEL, getHealth, checkProviderStatus } = require('./ai');
 
 const app = express();
 const PORT = process.env.PORT || 8787;
 const ALLOWED = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
-const MAX_PROMPT_CHARS = 40000;
+const MAX_PROMPT_CHARS = 200000;
+app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '4mb' }));
 
 app.use(cors({
   origin(origin, cb) {
-    if (!origin || ALLOWED.length === 0 || ALLOWED.includes(origin)) return cb(null, true);
-    cb(new Error('Origin not allowed: ' + origin));
-  }
+    if (!origin) return cb(null, false);
+    cb(null, ALLOWED.includes(origin));
+  },
+  credentials: true
 }));
 
 app.use('/api/', rateLimit({
@@ -33,6 +37,46 @@ app.use('/api/', rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests. Wait a minute and try again.' }
+}));
+
+app.use('/api/auth/', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many authentication attempts. Try again later.', code: 'rate_limited' }
+}));
+
+const userAiRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  keyGenerator: req => req.user.id,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many AI requests. Wait a minute and try again.', code: 'rate_limited' }
+});
+
+async function persistentUserAiRateLimit(req, res, next) {
+  try {
+    const { data, error } = await req.userSupabase.rpc('consume_user_ai_rate_limit', { max_requests:20 });
+    if (error) {
+      console.error('Persistent AI rate limit unavailable:', error.code || 'database_error');
+      return bad(res, 503, 'AI requests are temporarily unavailable because the account rate limit could not be checked.', 'database_unavailable');
+    }
+    if (data !== true) return bad(res, 429, 'Too many AI requests. Wait a minute and try again.', 'rate_limited');
+    next();
+  } catch (error) {
+    console.error('Persistent AI rate limit unavailable:', error.code || 'database_error');
+    return bad(res, 503, 'AI requests are temporarily unavailable because the account rate limit could not be checked.', 'database_unavailable');
+  }
+}
+
+app.use('/api/auth/', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 12,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many authentication attempts. Try again later.', code: 'rate_limited' }
 }));
 
 const APP_ROOT = fs.existsSync(path.join(__dirname, 'public')) ? path.join(__dirname, 'public') : __dirname;
@@ -49,23 +93,23 @@ function bad(res, status, message, code) {
 
 function aiFailure(err) {
   const message = String((err && err.message) || '');
+  if (err && err.code === 'missing_api_key') {
+    return { status: 503, code: 'missing_api_key', message: 'AI is not configured. Add GEMINI_API_KEY to the server environment, then redeploy.' };
+  }
   if (err && err.code === 'invalid_api_key') {
     return { status: 401, code: 'invalid_api_key', message: 'Gemini rejected the credential. Set GEMINI_API_KEY to an API key from Google AI Studio, not an OAuth access token, then restart or redeploy.' };
   }
-  if (err && err.code === 'provider_overloaded' || err && err.status === 503 || /overload|high demand/i.test(message)) {
+  if (err && err.code === 'invalid_model') {
+    return { status: 400, code: 'invalid_model', message: 'The configured Gemini model is unavailable. Check GEMINI_MODEL and GEMINI_FALLBACK_MODEL.' };
+  }
+  if (err && err.code === 'credits_exhausted' || /quota|credit balance|purchase credits|plans?\s*&?\s*billing/i.test(message)) {
+    return { status: 402, code: 'credits_exhausted', message: 'Gemini quota or credit is exhausted. Check Google AI Studio billing and quota.' };
+  }
+  if ((err && err.code === 'provider_overloaded') || (err && err.status === 503) || /overload|high demand/i.test(message)) {
     return { status: 503, code: 'provider_overloaded', message: 'Gemini is experiencing high demand. Please retry in a moment.' };
   }
-  if (/credit balance is too low|purchase credits|plans?\s*&?\s*billing/i.test(message)) {
-    return { status: 402, code: 'credits_exhausted', message: 'Your Google Gemini API account has no available credit. Add credit in Google AI Studio → Plans & Billing, then try again.' };
-  }
-  if (/no.*key.*configured|missing.*key|set GEMINI_API_KEY/i.test(message)) {
-    return { status: 400, code: 'missing_api_key', message: 'No AI API key is configured. Add ANTHROPIC_API_KEY or GEMINI_API_KEY in Vercel environment variables or enter it in Settings.' };
-  }
-  if (/authentication_error|invalid.*api key|api[_ ]key|401|403/i.test(message)) {
-    return { status: 401, code: 'invalid_api_key', message: 'Gemini rejected the credential. Set GEMINI_API_KEY to an API key from Google AI Studio, not an OAuth access token, then restart or redeploy.' };
-  }
-  if (/not_found_error|model.*not found|unknown model/i.test(message)) {
-    return { status: 400, code: 'invalid_model', message: 'The configured Gemini model is unavailable. Set GEMINI_MODEL to a supported model such as gemini-3.5-flash, or remove the override, then restart or redeploy.' };
+  if (err && err.code === 'provider_unavailable') {
+    return { status: 503, code: 'provider_unavailable', message: 'Gemini is currently unavailable. Try again later.' };
   }
   if (/overloaded_error|overloaded/i.test(message)) {
     return { status: 529, code: 'provider_overloaded', message: 'The AI provider is temporarily overloaded. Please retry in a moment.' };
@@ -87,12 +131,6 @@ function readPrompt(req, res) {
   if (!prompt || typeof prompt !== 'string') { bad(res, 400, 'prompt is required'); return null; }
   if (prompt.length > MAX_PROMPT_CHARS) { bad(res, 413, 'That request is too long.'); return null; }
   return prompt;
-}
-
-function readCustomKey(req) {
-  const header = req.headers['x-api-key'] || req.headers['authorization'];
-  if (!header) return null;
-  return header.replace(/^Bearer\s+/i, '').trim() || null;
 }
 
 // New Sanitization Helper
@@ -198,32 +236,169 @@ function getPlaylistItems(url) {
   });
 }
 
-app.get(['/api/health', '/health', '/api'], (req, res) => res.json(getHealth()));
+app.get(['/api/health', '/health', '/api'], asyncRoute(async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const provider = await checkProviderStatus();
+  res.json({ ...getHealth(), ...provider, ok: true, service: 'available', ready: provider.ready === true });
+}));
 
-app.get(['/api/playlist', '/playlist'], asyncRoute(async (req, res) => {
+app.get('/api/auth/config', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ configured: hasSupabaseConfig(), siteUrl: process.env.AUTH_SITE_URL || req.get('origin') || '' });
+});
+
+app.post('/api/auth/signup', asyncRoute(async (req, res) => {
+  if (!hasSupabaseConfig()) return bad(res, 503, 'Authentication is not configured.', 'auth_unavailable');
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  const displayName = String(req.body?.displayName || '').trim().slice(0, 100);
+  if (!/^\S+@\S+\.\S+$/.test(email)) return bad(res, 400, 'Enter a valid email address.', 'invalid_email');
+  if (password.length < 10 || password.length > 128) return bad(res, 400, 'Use a password between 10 and 128 characters.', 'invalid_password');
+  const { url, anonKey } = getSupabaseConfig();
+  const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+  const { data, error } = await client.auth.signUp({
+    email,
+    password,
+    options: { data: { display_name: displayName }, emailRedirectTo: (process.env.AUTH_SITE_URL || req.get('origin') || '').replace(/\/$/, '') + '/?auth=verify' }
+  });
+  if (error) return bad(res, 400, error.message, 'signup_failed');
+  if (data.session) res.setHeader('Set-Cookie', sessionCookies(data.session));
+  res.status(201).json({ user: data.user ? { id: data.user.id, email: data.user.email } : null, confirmationRequired: !data.session });
+}));
+
+app.post('/api/auth/login', asyncRoute(async (req, res) => {
+  if (!hasSupabaseConfig()) return bad(res, 503, 'Authentication is not configured.', 'auth_unavailable');
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+  if (!email || !password) return bad(res, 400, 'Email and password are required.', 'missing_credentials');
+  const { url, anonKey } = getSupabaseConfig();
+  const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+  const { data, error } = await client.auth.signInWithPassword({ email, password });
+  if (error || !data.session) return bad(res, 401, 'Email or password is incorrect.', 'invalid_credentials');
+  res.setHeader('Set-Cookie', sessionCookies(data.session));
+  res.json({ user: { id: data.user.id, email: data.user.email } });
+}));
+
+app.get('/api/auth/session', authenticateRequest, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ user: { id: req.user.id, email: req.user.email } });
+});
+
+app.post('/api/auth/logout', authenticateRequest, asyncRoute(async (req, res) => {
+  const cookies = cookieValues(req);
+  try {
+    if (cookies.ap_refresh && cookies.ap_access) {
+      const { url, anonKey } = getSupabaseConfig();
+      const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+      await client.auth.setSession({ access_token: cookies.ap_access, refresh_token: cookies.ap_refresh });
+      await client.auth.signOut({ scope: 'local' });
+    }
+  } finally {
+    res.setHeader('Set-Cookie', sessionCookies(null, true));
+  }
+  res.json({ ok: true });
+}));
+
+app.post('/api/auth/forgot-password', asyncRoute(async (req, res) => {
+  if (!hasSupabaseConfig()) return bad(res, 503, 'Authentication is not configured.', 'auth_unavailable');
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return bad(res, 400, 'Enter a valid email address.', 'invalid_email');
+  const { url, anonKey } = getSupabaseConfig();
+  const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+  const redirectTo = (process.env.AUTH_SITE_URL || req.get('origin') || '').replace(/\/$/, '') + '/?auth=reset';
+  const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo });
+  if (error) return bad(res, 502, 'Could not send a reset email. Check Supabase Auth email settings.', 'reset_email_failed');
+  res.json({ ok: true });
+}));
+
+app.post('/api/auth/verify', asyncRoute(async (req, res) => {
+  if (!hasSupabaseConfig()) return bad(res, 503, 'Authentication is not configured.', 'auth_unavailable');
+  const tokenHash = String(req.body?.token_hash || '').trim();
+  const type = String(req.body?.type || 'signup');
+  if (!tokenHash || tokenHash.length > 4096 || !['signup','email','recovery','invite','magiclink','email_change'].includes(type)) return bad(res, 400, 'The confirmation link is invalid or expired.', 'invalid_confirmation');
+  const { url, anonKey } = getSupabaseConfig();
+  const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+  const { data, error } = await client.auth.verifyOtp({ token_hash: tokenHash, type });
+  if (error || !data.session) return bad(res, 400, 'The confirmation link is invalid or expired.', 'invalid_confirmation');
+  res.setHeader('Set-Cookie', sessionCookies(data.session));
+  res.json({ user: { id: data.user.id, email: data.user.email } });
+}));
+
+app.post('/api/auth/reset/exchange', asyncRoute(async (req, res) => {
+  if (!hasSupabaseConfig()) return bad(res, 503, 'Authentication is not configured.', 'auth_unavailable');
+  const code = String(req.body?.code || '').trim();
+  if (!code || code.length > 4096) return bad(res, 400, 'The reset link is invalid or expired.', 'invalid_reset_code');
+  const { url, anonKey } = getSupabaseConfig();
+  const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+  const { data, error } = await client.auth.exchangeCodeForSession(code);
+  if (error || !data.session) return bad(res, 400, 'The reset link is invalid or expired.', 'invalid_reset_code');
+  res.setHeader('Set-Cookie', sessionCookies(data.session));
+  res.json({ user: { id: data.user.id, email: data.user.email } });
+}));
+
+app.post('/api/auth/reset-password', authenticateRequest, asyncRoute(async (req, res) => {
+  const password = String(req.body?.password || '');
+  if (password.length < 10 || password.length > 128) return bad(res, 400, 'Use a password between 10 and 128 characters.', 'invalid_password');
+  const { error } = await req.userSupabase.auth.updateUser({ password });
+  if (error) return bad(res, 400, 'Could not update the password. Request a new reset link.', 'password_reset_failed');
+  res.json({ ok: true });
+}));
+
+app.get('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, res) => {
+  const { data, error } = await req.userSupabase.from('learner_snapshots').select('payload,updated_at').eq('user_id', req.user.id).maybeSingle();
+  if (error) return bad(res, 503, 'Could not load your learning data. Apply the database migration and retry.', 'database_unavailable');
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ user: { id: req.user.id, email: req.user.email }, snapshot: data?.payload || null, updatedAt: data?.updated_at || null });
+}));
+
+app.put('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, res) => {
+  const payload = req.body?.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return bad(res, 400, 'A learning snapshot object is required.', 'invalid_snapshot');
+  if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > 3 * 1024 * 1024) return bad(res, 413, 'The learning snapshot is too large to save.', 'snapshot_too_large');
+  const result = await req.userSupabase.from('learner_snapshots').upsert({ user_id: req.user.id, payload, updated_at: new Date().toISOString() }, { onConflict: 'user_id' }).select('updated_at').single();
+  if (result.error) return bad(res, 503, 'Could not save your learning data. Check that the database migration has been applied.', 'database_unavailable');
+  res.json({ ok: true, updatedAt: result.data.updated_at });
+}));
+
+app.get('/api/learner/export', authenticateRequest, asyncRoute(async (req, res) => {
+  const result = await req.userSupabase.from('learner_snapshots').select('payload,updated_at').eq('user_id', req.user.id).maybeSingle();
+  if (result.error) return bad(res, 503, 'Could not export your learning data. Apply the database migration and retry.', 'database_unavailable');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Disposition', 'attachment; filename="adaptpractice-export.json"');
+  res.json({ exportedAt: new Date().toISOString(), userId: req.user.id, snapshot: result.data?.payload || null });
+}));
+
+app.delete('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, res) => {
+  for (const table of ['learner_snapshots','student_profiles','learning_events','courses']) {
+    const { error } = await req.userSupabase.from(table).delete().eq('user_id', req.user.id);
+    if (error) return bad(res, 503, 'Could not completely delete your learning data. Retry after checking the database migration.', 'database_unavailable');
+  }
+  res.json({ ok: true });
+}));
+
+app.get(['/api/playlist', '/playlist'], authenticateRequest, asyncRoute(async (req, res) => {
   const url = sanitizeUrl(req.query.url);
   if (!url) return bad(res, 400, 'A YouTube playlist URL is required.');
   const items = await getPlaylistItems(url);
   res.json({ ok: true, items });
 }));
 
-app.post(['/api/ai/text', '/ai/text'], asyncRoute(async (req, res) => {
+app.post(['/api/ai/text', '/ai/text'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, asyncRoute(async (req, res) => {
   const prompt = readPrompt(req, res); if (prompt === null) return;
-  const customKey = readCustomKey(req);
-  const text = await askText(prompt, 1500, customKey);
+  const text = await askText(prompt, 1500);
   res.json({ text });
 }));
 
-app.post(['/api/ai/json', '/ai/json'], asyncRoute(async (req, res) => {
+app.post(['/api/ai/json', '/ai/json'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, asyncRoute(async (req, res) => {
   const prompt = readPrompt(req, res); if (prompt === null) return;
-  const customKey = readCustomKey(req);
-  const out = await askJSON(prompt, 3500, customKey);
+  const out = await askJSON(prompt, 3500);
   res.json(out);
 }));
 
-app.post(['/api/ai/stream', '/ai/stream'], (req, res) => {
+app.post(['/api/ai/stream', '/ai/stream'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, (req, res) => {
   const prompt = readPrompt(req, res); if (prompt === null) return;
-  const customKey = readCustomKey(req);
+  const controller = new AbortController();
+  req.on('aborted', () => controller.abort());
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -244,11 +419,12 @@ app.post(['/api/ai/stream', '/ai/stream'], (req, res) => {
       onDelta: (delta) => { if (!done && !res.writableEnded) res.write(`data: ${JSON.stringify({ delta })}\n\n`); },
       onEnd: () => finish('data: [DONE]\n\n'),
       onError: (err) => {
-        console.error('stream error:', err.message || err);
+        console.error('stream error:', err.code || 'provider_error');
         const failure = aiFailure(err);
         finish(`data: ${JSON.stringify({ error: failure.message, code: failure.code })}\n\n`);
-      }
-    }, customKey);
+      },
+      signal: controller.signal
+    });
   } catch (err) {
     console.error(err);
     const failure = aiFailure(err);
