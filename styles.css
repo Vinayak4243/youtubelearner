@@ -118,7 +118,7 @@ hr{border:0; border-top:1px solid var(--rule-soft); margin:16px 0}
 .btn.sm{padding:6px 11px; font-size:.8rem}
 .btn:disabled{opacity:.45; cursor:not-allowed; filter:none}
 
-input[type=text],input[type=url],input[type=number],input[type=email],textarea,select{
+input[type=text],input[type=url],input[type=number],input[type=email],input[type=password],textarea,select{
   width:100%; font-family:inherit; font-size:.9rem; color:var(--text);
   background:var(--sheet); border:1px solid var(--rule); border-radius:7px; padding:9px 11px;
 }

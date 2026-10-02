@@ -96,6 +96,46 @@ function bad(res, status, message, code) {
   return res.status(status).json({ error: message, ...(code ? { code } : {}) });
 }
 
+function classifySignupFailure(error) {
+  const message = String(error?.message || '').toLowerCase();
+  const providerCode = String(error?.code || '').toLowerCase();
+  if (providerCode.includes('rate_limit') || /rate limit|email rate limit/.test(message)) {
+    return { status:429, code:'signup_rate_limited', category:'email_rate_limit', message:'Too many signup or confirmation-email requests. Wait a while and try again.' };
+  }
+  if (/signup_disabled|email_provider_disabled/.test(providerCode) || /signups? (are|is) disabled|email provider.*disabled/.test(message)) {
+    return { status:503, code:'signup_unavailable', category:'signup_disabled', message:'Account registration is unavailable. Please contact the site owner.' };
+  }
+  if (/redirect/.test(message) && /allowed|url|whitelist/.test(message)) {
+    return { status:503, code:'auth_redirect_misconfigured', category:'redirect_configuration', message:'Account email links are not configured correctly. Please contact the site owner.' };
+  }
+  if (/database|saving new user|trigger|constraint/.test(message)) {
+    return { status:503, code:'signup_database_error', category:'database_or_trigger', message:'The account service could not create your account. Please contact the site owner.' };
+  }
+  if (/sending confirmation|confirmation email|smtp|email delivery/.test(message)) {
+    return { status:503, code:'signup_email_delivery_failed', category:'email_delivery', message:'The confirmation email could not be sent. Please try again later or contact the site owner.' };
+  }
+  if (/weak_password|password.*(weak|characters|length)/.test(providerCode + ' ' + message)) {
+    return { status:400, code:'invalid_password', category:'password_policy', message:'Choose a stronger password that meets the account password requirements.' };
+  }
+  if (/email_address_invalid|email.*invalid/.test(providerCode + ' ' + message)) {
+    return { status:400, code:'invalid_email', category:'invalid_email', message:'Enter a valid email address.' };
+  }
+  if (/already registered|already been registered|user already exists/.test(message)) {
+    return { status:409, code:'email_already_registered', category:'duplicate_account', message:'An account may already exist for this email. Try signing in or resetting your password.' };
+  }
+  return { status:502, code:'signup_failed', category:'provider_rejected_signup', message:'Your account could not be created. Please try again later.' };
+}
+
+function safeAuthDiagnostic(error, category) {
+  const code = String(error?.code || '');
+  console.error('Supabase signup failed:', {
+    category,
+    status: Number.isInteger(error?.status) ? error.status : null,
+    code: /^[A-Za-z0-9_-]{1,64}$/.test(code) ? code : null,
+    errorType: /^[A-Za-z0-9_$]{1,64}$/.test(error?.name || '') ? error.name : null
+  });
+}
+
 function aiFailure(err) {
   const message = String((err && err.message) || '');
   if (err && err.code === 'missing_api_key') {
@@ -124,8 +164,13 @@ function aiFailure(err) {
 
 function asyncRoute(fn) {
   return (req, res) => fn(req, res).catch(err => {
-    if (err && err.code === 'invalid_api_key') console.error('AI provider rejected the configured API key.');
-    else console.error(err);
+    const code = String(err?.code || '');
+    console.error('Request failed:', {
+      route: req.path,
+      status: Number.isInteger(err?.status) ? err.status : null,
+      code: /^[A-Za-z0-9_-]{1,64}$/.test(code) ? code : null,
+      errorType: /^[A-Za-z0-9_$]{1,64}$/.test(err?.name || '') ? err.name : null
+    });
     const failure = aiFailure(err);
     bad(res, failure.status, failure.message, failure.code);
   });
@@ -261,12 +306,24 @@ app.post('/api/auth/signup', asyncRoute(async (req, res) => {
   if (password.length < 10 || password.length > 128) return bad(res, 400, 'Use a password between 10 and 128 characters.', 'invalid_password');
   const { url, anonKey } = getSupabaseConfig();
   const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
-  const { data, error } = await client.auth.signUp({
-    email,
-    password,
-    options: { data: { display_name: displayName }, emailRedirectTo: (process.env.AUTH_SITE_URL || req.get('origin') || '').replace(/\/$/, '') + '/?auth=verify' }
-  });
-  if (error) return bad(res, 400, error.message, 'signup_failed');
+  let result;
+  try {
+    result = await client.auth.signUp({
+      email,
+      password,
+      options: { data: { display_name: displayName }, emailRedirectTo: (process.env.AUTH_SITE_URL || req.get('origin') || '').replace(/\/$/, '') + '/?auth=verify' }
+    });
+  } catch (error) {
+    const failure = classifySignupFailure(error);
+    safeAuthDiagnostic(error, failure.category);
+    return bad(res, failure.status, failure.message, failure.code);
+  }
+  const { data, error } = result;
+  if (error) {
+    const failure = classifySignupFailure(error);
+    safeAuthDiagnostic(error, failure.category);
+    return bad(res, failure.status, failure.message, failure.code);
+  }
   if (data.session) res.setHeader('Set-Cookie', sessionCookies(data.session));
   res.status(201).json({ user: data.user ? { id: data.user.id, email: data.user.email } : null, confirmationRequired: !data.session });
 }));

@@ -201,6 +201,13 @@ async function authRequest(path, options){
 function authErrorMessage(error){
   const messages = {
     auth_unavailable:'Account sign-in is temporarily unavailable. Please try again later.',
+    signup_failed:'Your account could not be created. Please try again later.',
+    signup_unavailable:'Account registration is unavailable. Please contact the site owner.',
+    signup_rate_limited:'Too many signup or confirmation-email requests. Wait a while and try again.',
+    signup_database_error:'The account service could not create your account. Please contact the site owner.',
+    signup_email_delivery_failed:'The confirmation email could not be sent. Please try again later or contact the site owner.',
+    auth_redirect_misconfigured:'Account email links are not configured correctly. Please contact the site owner.',
+    email_already_registered:'An account may already exist for this email. Try signing in or resetting your password.',
     database_unavailable:'Your learning data could not be loaded. Please try again later.',
     invalid_email:'Enter a valid email address.',
     invalid_password:'Use a password between 10 and 128 characters.',
