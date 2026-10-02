@@ -23,6 +23,11 @@ app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '4mb' }));
 
+app.use((req, res, next) => {
+  if (process.env.VERCEL && /^\/(?:auth|learner)(?:\/|$)/.test(req.path)) req.url = '/api' + req.url;
+  next();
+});
+
 app.use(cors({
   origin(origin, cb) {
     if (!origin) return cb(null, false);

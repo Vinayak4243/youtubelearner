@@ -90,6 +90,9 @@ test('Vercel has explicit function entry points for nested AI endpoints', () => 
   for (const name of ['json', 'text', 'stream']) {
     assert.equal(fs.existsSync(path.join(__dirname, '..', 'api', 'ai', `${name}.js`)), true);
   }
+  for (const name of ['auth', 'learner']) {
+    assert.equal(fs.existsSync(path.join(__dirname, '..', 'api', name, '[...path].js')), true);
+  }
 });
 
 for (const name of ['json', 'text', 'stream']) {
@@ -141,6 +144,23 @@ test('Auth config accepts the Supabase publishable key without exposing it', asy
     else process.env.SUPABASE_ANON_KEY = originalAnonKey;
     if (originalPublishableKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = originalPublishableKey;
+  }
+});
+
+test('Vercel catch-all API paths route auth and learner requests to Express endpoints', async () => {
+  const originalVercel = process.env.VERCEL;
+  process.env.VERCEL = '1';
+  try {
+    const configResponse = await fetch(`${baseUrl}/auth/config`);
+    assert.equal(configResponse.status, 200);
+    assert.equal((await configResponse.json()).configured, true);
+
+    const sessionResponse = await fetch(`${baseUrl}/learner/snapshot`);
+    assert.equal(sessionResponse.status, 401);
+    assert.equal((await sessionResponse.json()).code, 'not_authenticated');
+  } finally {
+    if (originalVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = originalVercel;
   }
 });
 
