@@ -12,7 +12,10 @@ const fs = require('fs');
 const { execFile } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
 const { authenticateRequest, hasSupabaseConfig, getSupabaseConfig, sessionCookies, cookieValues, createUserClient } = require('./server/auth');
-const { normalizePlaylistUrl: normalizeYouTubePlaylistUrl } = require('./public/youtube-url');
+const {
+  normalizePlaylistUrl: normalizeYouTubePlaylistUrl,
+  videoId: parseYouTubeVideoId
+} = require('./public/youtube-url');
 
 const { askText, askJSON, streamText, MODEL, getHealth, checkProviderStatus } = require('./ai');
 
@@ -172,6 +175,9 @@ function asyncRoute(fn) {
       code: /^[A-Za-z0-9_-]{1,64}$/.test(code) ? code : null,
       errorType: /^[A-Za-z0-9_$]{1,64}$/.test(err?.name || '') ? err.name : null
     });
+    if (code.startsWith('youtube_')) {
+      return bad(res, Number.isInteger(err.status) ? err.status : 502, err.message, code);
+    }
     const failure = aiFailure(err);
     bad(res, failure.status, failure.message, failure.code);
   });
@@ -204,19 +210,49 @@ const YT_DLP_PATH = YT_DLP_CANDIDATES.find(candidate => {
   try { return fs.existsSync(candidate); } catch (e) { return false; }
 }) || (process.env.VERCEL ? null : 'yt-dlp');
 
-async function youtubeApiRequest(resource, params) {
-  const url = new URL('https://www.googleapis.com/youtube/v3/' + resource);
-  Object.entries({ ...params, key: process.env.YOUTUBE_API_KEY }).forEach(([key, value]) => url.searchParams.set(key, value));
-  const response = await fetch(url);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error?.message || 'The YouTube Data API request failed.');
-  return data;
-}
+const YOUTUBE_API_TIMEOUT_MS = 45000;
 
-function durationSeconds(isoDuration) {
-  const match = String(isoDuration || '').match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
-  if (!match) return '';
-  return (Number(match[1] || 0) * 3600) + (Number(match[2] || 0) * 60) + Number(match[3] || 0);
+async function youtubeApiRequest(resource, params, signal) {
+  if (!process.env.YOUTUBE_API_KEY) {
+    const error = new Error('Automated playlist imports need YOUTUBE_API_KEY configured on the server.');
+    error.code = 'youtube_api_key_missing';
+    error.status = 503;
+    throw error;
+  }
+  const url = new URL('https://www.googleapis.com/youtube/v3/' + resource);
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+  url.searchParams.set('key', process.env.YOUTUBE_API_KEY);
+  let response;
+  try {
+    response = await fetch(url, { signal });
+  } catch (cause) {
+    const error = new Error('The YouTube request timed out or could not connect. Check the server network and retry.');
+    error.code = 'youtube_request_timeout';
+    error.status = 504;
+    error.cause = cause;
+    throw error;
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const reasons = (data.error?.errors || []).map(item => item.reason).filter(Boolean);
+    const reason = reasons[0] || '';
+    const error = new Error('The YouTube Data API request failed.');
+    error.status = response.status;
+    if (reason === 'API_KEY_HTTP_REFERRER_BLOCKED' || /referer.*blocked/i.test(data.error?.message || '')) {
+      error.code = 'youtube_api_key_restricted';
+      error.message = 'The server-side YouTube API key is restricted by an HTTP referrer. Set its application restriction to None (or a fixed server egress IP, if available) and restrict API access to YouTube Data API v3.';
+    } else if (reason === 'quotaExceeded') {
+      error.code = 'youtube_quota_exceeded';
+      error.message = 'The YouTube Data API quota is exhausted. Check Google Cloud Console → APIs & Services → YouTube Data API v3 → Quotas, then retry.';
+    } else if (/API key not valid|invalid.*key/i.test(data.error?.message || '')) {
+      error.code = 'youtube_api_key_invalid';
+      error.message = 'The server-side YouTube Data API key was rejected. Check YOUTUBE_API_KEY in the server environment.';
+    } else {
+      error.code = 'youtube_api_error';
+    }
+    throw error;
+  }
+  return data;
 }
 
 async function getPlaylistItemsFromApi(url) {
@@ -226,40 +262,65 @@ async function getPlaylistItemsFromApi(url) {
   if (!playlistId) throw new Error('That URL does not contain a YouTube playlist ID.');
 
   const items = [];
+  let unavailableCount = 0;
   let pageToken = '';
-  let pages = 0;
+  const timeout = AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS);
   do {
     const page = await youtubeApiRequest('playlistItems', {
       part: 'snippet,contentDetails', maxResults: '50', playlistId,
+      fields: 'nextPageToken,items(snippet(position,title,resourceId/videoId),contentDetails/videoId)',
       ...(pageToken ? { pageToken } : {})
-    });
+    }, timeout);
     for (const entry of page.items || []) {
       const videoId = entry.contentDetails?.videoId || entry.snippet?.resourceId?.videoId;
-      const title = entry.snippet?.title;
-      if (!videoId || !title || title === 'Private video' || title === 'Deleted video') continue;
-      items.push({ index: Number(entry.snippet.position) + 1 || items.length + 1, title, id: videoId, duration: '', url: 'https://www.youtube.com/watch?v=' + videoId });
+      const title = typeof entry.snippet?.title === 'string' ? entry.snippet.title.trim() : '';
+      const position = Number(entry.snippet?.position);
+      if (!/^[A-Za-z0-9_-]{11}$/.test(videoId || '') || !title || title === 'Private video' || title === 'Deleted video') {
+        unavailableCount++;
+        continue;
+      }
+      items.push({
+        index: Number.isInteger(position) && position >= 0 ? position + 1 : items.length + 1,
+        title,
+        id: videoId,
+        duration: '',
+        url: 'https://www.youtube.com/watch?v=' + videoId
+      });
     }
     pageToken = page.nextPageToken || '';
-    pages++;
-  } while (pageToken && pages < 20);
+  } while (pageToken);
 
   if (!items.length) throw new Error('No videos were found in that playlist.');
-  for (let offset = 0; offset < items.length; offset += 50) {
-    const batch = items.slice(offset, offset + 50);
-    const details = await youtubeApiRequest('videos', {
-      part: 'contentDetails', id: batch.map(item => item.id).join(',')
-    });
-    const durations = new Map((details.items || []).map(video => [video.id, durationSeconds(video.contentDetails?.duration)]));
-    batch.forEach(item => { item.duration = durations.get(item.id) ?? ''; });
+  return { items, unavailableCount };
+}
+
+async function getVideoMetadata(videoId) {
+  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId || '')) throw new Error('Enter a valid YouTube video link.');
+  const signal = AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS);
+  const result = await youtubeApiRequest('videos', {
+    part: 'snippet', id: videoId, fields: 'items(id,snippet(title))'
+  }, signal);
+  const video = (result.items || []).find(item => item.id === videoId);
+  if (!video?.snippet?.title) {
+    const error = new Error('YouTube did not return public metadata for this video. Check that the video is available.');
+    error.code = 'youtube_video_metadata_unavailable';
+    error.status = 404;
+    throw error;
   }
-  return items;
+  return { id:videoId, title:video.snippet.title };
 }
 
 function getPlaylistItems(url) {
   const cleanUrl = sanitizeUrl(url);
+  if (process.env.YOUTUBE_API_KEY) return getPlaylistItemsFromApi(cleanUrl);
+  if (process.env.VERCEL) {
+    const error = new Error('Playlist import is not configured. Add YOUTUBE_API_KEY as a server-only Vercel environment variable and redeploy.');
+    error.code = 'youtube_api_key_missing';
+    error.status = 503;
+    return Promise.reject(error);
+  }
   return new Promise((resolve, reject) => {
     if (!YT_DLP_PATH) {
-      if (process.env.YOUTUBE_API_KEY) return resolve(getPlaylistItemsFromApi(cleanUrl));
       return reject(new Error('Automated playlist fetching requires yt-dlp. On the web version, please paste your playlist video titles directly into the box.'));
     }
     execFile(YT_DLP_PATH, ['--flat-playlist', '--print', '%(playlist_index)s|%(title)s|%(id)s|%(duration)s|%(url)s', cleanUrl], { timeout: 30000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
@@ -282,7 +343,7 @@ function getPlaylistItems(url) {
         items.push({ index: Number.isFinite(index) ? index : items.length + 1, title, id: videoId, duration, url: watchUrl });
       }
       if (!items.length) return reject(new Error('No videos were found in that playlist. You can paste the lesson titles directly.'));
-      resolve(items);
+      resolve({ items, unavailableCount:0 });
     });
   });
 }
@@ -449,8 +510,15 @@ app.delete('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, 
 app.get(['/api/playlist', '/playlist'], authenticateRequest, asyncRoute(async (req, res) => {
   const url = normalizeYouTubePlaylistUrl(req.query.url);
   if (!url) return bad(res, 400, 'Enter a valid YouTube playlist URL with a playlist ID.', 'invalid_youtube_url');
-  const items = await getPlaylistItems(url);
-  res.json({ ok: true, items });
+  const result = await getPlaylistItems(url);
+  res.json({ ok: true, ...result });
+}));
+
+app.get('/api/video', authenticateRequest, asyncRoute(async (req, res) => {
+  const videoId = parseYouTubeVideoId(req.query.url);
+  if (!videoId) return bad(res, 400, 'Enter a valid YouTube video link.', 'invalid_youtube_url');
+  const video = await getVideoMetadata(videoId);
+  res.json({ ok:true, video, transcriptAvailable:false });
 }));
 
 app.post(['/api/ai/text', '/ai/text'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, asyncRoute(async (req, res) => {

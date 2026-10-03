@@ -6,12 +6,15 @@ const { getSupabaseConfig } = require('../server/auth');
 
 process.env.GEMINI_API_KEY = 'test-server-key';
 process.env.GEMINI_MODEL = 'test-model';
+process.env.YOUTUBE_API_KEY = 'test-youtube-key';
 process.env.SUPABASE_URL = 'https://supabase.test';
 process.env.SUPABASE_ANON_KEY = 'test-anon-key';
 const nativeFetch = global.fetch;
 let providerStatus = { status: 200, body: '{}' };
 let providerStreamBody = 'data: {"candidates":[{"content":{"parts":[{"text":"streamed answer"}]}}]}\n\n';
 let lastSnapshotWrite = null;
+let youtubePageRequests = [];
+let youtubePlaylistStatus = 200;
 const testAccessToken = [
   Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url'),
   Buffer.from(JSON.stringify({ sub:'user-1', exp:Math.floor(Date.now() / 1000) + 3600 })).toString('base64url'),
@@ -33,6 +36,34 @@ let signupResponse = {
 };
 global.fetch = async (input, init) => {
   const url = new URL(input);
+  if (url.hostname === 'www.googleapis.com') {
+    assert.equal(url.searchParams.get('key'), process.env.YOUTUBE_API_KEY);
+    assert.equal(new Headers(init.headers).has('referer'), false);
+    if (youtubePlaylistStatus !== 200) {
+      return new Response(JSON.stringify({ error:{ message:'Requests from referer <empty> are blocked.' } }), {
+        status:youtubePlaylistStatus, headers:{ 'content-type':'application/json' }
+      });
+    }
+    if (url.pathname.endsWith('/playlistItems')) {
+      const token = url.searchParams.get('pageToken') || '';
+      youtubePageRequests.push(token);
+      const page = token ? Number(token.replace('next-','')) : 1;
+      const videoId = 'v' + String(page).padStart(10, '0');
+      return new Response(JSON.stringify({
+        items:[
+          { snippet:{ position:page-1, title:`Actual video ${page}`, resourceId:{ videoId } }, contentDetails:{ videoId } },
+          { snippet:{ position:page, title:'YouTube navigation text', resourceId:{ videoId:'invalid' } }, contentDetails:{ videoId:'invalid' } }
+        ],
+        ...(page < 22 ? { nextPageToken:'next-' + (page+1) } : {})
+      }), { status:200, headers:{ 'content-type':'application/json' } });
+    }
+    if (url.pathname.endsWith('/videos')) {
+      return new Response(JSON.stringify({ items:[{ id:url.searchParams.get('id'), snippet:{ title:'Metadata title' } }] }), {
+        status:200, headers:{ 'content-type':'application/json' }
+      });
+    }
+    throw new Error(`Unexpected YouTube API request: ${url.pathname}`);
+  }
   if (url.hostname === 'supabase.test') {
     if (url.pathname.endsWith('/auth/v1/signup')) {
       assert.equal(new Headers(init.headers).get('apikey'), process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY);
@@ -154,6 +185,52 @@ test('playlist API rejects non-YouTube URLs before fetching metadata', async () 
   const body = await response.json();
   assert.equal(response.status, 400);
   assert.equal(body.code, 'invalid_youtube_url');
+});
+
+test('playlist import reads every YouTube API page and returns only valid playlist video records', async () => {
+  youtubePageRequests = [];
+  const playlistId = 'PLhR2IpV1b2FwWwviBHRrR118YAaSlyhTU';
+  const response = await fetch(`${baseUrl}/api/playlist?url=${encodeURIComponent(`https://www.youtube.com/playlist?list=${playlistId}`)}`, {
+    headers: { cookie:`ap_access=${encodeURIComponent(testAccessToken)}` }
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.items.length, 22);
+  assert.equal(body.unavailableCount, 22);
+  assert.equal(youtubePageRequests.length, 22);
+  assert.deepEqual(body.items.slice(0, 2).map(item => [item.index, item.title]), [
+    [1, 'Actual video 1'], [2, 'Actual video 2']
+  ]);
+  assert.equal(body.items[21].id, 'v0000000022');
+  assert.equal(body.items[21].url, 'https://www.youtube.com/watch?v=v0000000022');
+  assert.equal(body.items.some(item => item.title.includes('navigation')), false);
+});
+
+test('playlist import reports referrer restrictions without spoofing request headers', async () => {
+  youtubePlaylistStatus = 403;
+  const response = await fetch(`${baseUrl}/api/playlist?url=${encodeURIComponent('https://www.youtube.com/playlist?list=PLhR2IpV1b2FwWwviBHRrR118YAaSlyhTU')}`, {
+    headers: { cookie:`ap_access=${encodeURIComponent(testAccessToken)}` }
+  });
+  const body = await response.json();
+  youtubePlaylistStatus = 200;
+  assert.equal(response.status, 403);
+  assert.equal(body.code, 'youtube_api_key_restricted');
+  assert.match(body.error, /application restriction to None/);
+});
+
+test('video metadata route returns metadata separately from transcript availability', async () => {
+  const response = await fetch(`${baseUrl}/api/video?url=${encodeURIComponent('https://youtu.be/YvvAnuOzOSY')}`, {
+    headers: { cookie:`ap_access=${encodeURIComponent(testAccessToken)}` }
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.video, { id:'YvvAnuOzOSY', title:'Metadata title' });
+  assert.equal(body.transcriptAvailable, false);
+});
+
+test('browser loads source parsing helpers before application code', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  assert.ok(html.indexOf('src="source-context.js"') < html.indexOf('src="app.js"'));
 });
 
 test('Vercel has explicit function entry points for nested AI endpoints', () => {

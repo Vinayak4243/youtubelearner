@@ -191,6 +191,7 @@ async function authRequest(path, options){
   const response = await fetch(API_BASE + path, {
     credentials: 'same-origin',
     ...init,
+    signal: init.signal || AbortSignal.timeout(15000),
     headers: { 'Content-Type':'application/json', ...(init.headers || {}) }
   });
   const body = await response.json().catch(() => ({}));
@@ -198,6 +199,7 @@ async function authRequest(path, options){
   return body;
 }
 function authErrorMessage(error){
+  if (error && (error.name === 'AbortError' || error.name === 'TimeoutError')) return 'The secure session check timed out. Check your connection and retry.';
   const messages = {
     auth_unavailable:'Account sign-in is temporarily unavailable. Please try again later.',
     signup_failed:'Your account could not be created. Please try again later.',
@@ -415,13 +417,30 @@ async function finishLegacyImport(importData){
 async function fetchPlaylistItems(url){
   const listUrl = encodeURIComponent(String(url || '').trim());
   if (!listUrl) throw new Error('No playlist URL supplied.');
-  const res = await fetch(API_BASE + '/api/playlist?url=' + listUrl);
+  const res = await fetch(API_BASE + '/api/playlist?url=' + listUrl, {
+    credentials:'same-origin',
+    signal:AbortSignal.timeout(50000)
+  });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || 'Could not load the playlist.');
+    throw Object.assign(new Error(data.error || 'Could not load the playlist.'), { code:data.code || 'playlist_import_failed' });
   }
   const data = await res.json();
-  return Array.isArray(data.items) ? data.items : [];
+  return {
+    items:Array.isArray(data.items) ? data.items : [],
+    unavailableCount:Number.isInteger(data.unavailableCount) ? data.unavailableCount : 0
+  };
+}
+async function fetchVideoMetadata(url){
+  const res = await fetch(API_BASE + '/api/video?url=' + encodeURIComponent(String(url || '').trim()), {
+    credentials:'same-origin',
+    signal:AbortSignal.timeout(50000)
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw Object.assign(new Error(data.error || 'Video metadata is unavailable.'), { code:data.code || 'video_metadata_unavailable' });
+  }
+  return (await res.json()).video;
 }
 
 const AI_COPY = {
@@ -446,7 +465,9 @@ const AI_COPY = {
   cancelled:'Stopped.',
   upstream_error:'The AI request failed. Try again.'
 };
-const aiErr = e => AI_COPY[e && e.code] || (e && e.message) || AI_COPY.upstream_error;
+const aiErr = e => e && (e.name === 'TimeoutError' || e.name === 'AbortError')
+  ? 'The AI request timed out. Your source is still ready; retry the import.'
+  : AI_COPY[e && e.code] || (e && e.message) || AI_COPY.upstream_error;
 function aiAvailable(){ return !!SAMPLE; }
 
 /** Plain-text completion. Supports opts.onText(u) for streaming, where u.text is the growing full text so far — same shape the rest of this file already expects. */
@@ -454,13 +475,13 @@ async function ask(input, opts){
   opts = opts || {};
   if (!SAMPLE) throw { code:'not_granted', message:'backend unreachable' };
   if (!opts.onText) {
-    const res = await fetch(API_BASE + '/api/ai/text', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }) });
+    const res = await fetch(API_BASE + '/api/ai/text', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(90000) });
     if (!res.ok) throw await backendError(res);
     const data = await res.json();
     return { text: data.text || '' };
   }
   return new Promise((resolve, reject) => {
-    fetch(API_BASE + '/api/ai/stream', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }) })
+    fetch(API_BASE + '/api/ai/stream', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(90000) })
       .then(async res => {
         if (!res.ok || !res.body) return reject(await backendError(res));
         const reader = res.body.getReader(); const decoder = new TextDecoder();
@@ -488,7 +509,7 @@ async function ask(input, opts){
 /** JSON completion — the backend extracts/repairs JSON from Claude's reply and returns the parsed value directly. */
 async function askJson(input, opts){
   if (!SAMPLE) throw { code:'not_granted', message:'backend unreachable' };
-  const res = await fetch(API_BASE + '/api/ai/json', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }) });
+  const res = await fetch(API_BASE + '/api/ai/json', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(90000) });
   if (!res.ok) throw await backendError(res);
   return res.json();
 }
@@ -578,7 +599,7 @@ function rawLesson(course, id){
 const getCourse = id => D.courses.find(c => c.id === id);
 
 /* ---------- router ---------- */
-const S = { view:'landing', course:null, lesson:null, work:null, busy:'', apiError:'', modal:null, wizard:null, session:null };
+const S = { view:'landing', course:null, lesson:null, work:null, busy:'', apiError:'', modal:null, wizard:null, session:null, courseTab:'overview', courseSearch:'' };
 function updateAuthLocation(mode, replace){
   const hash = mode ? window.AdaptPracticeAuthRoutes.hashForMode(mode) : '';
   const url = location.pathname + location.search + hash;
@@ -689,26 +710,21 @@ function rail(){
     '<button class="nav" data-act="go" data-view="'+v+'" aria-current="'+(S.view===v)+'"><span class="g">'+g+'</span><span class="label">'+label+'</span>'+
     (count ? '<span class="ct">'+count+'</span>' : '') + '</button>';
   const statusText = !aiChecked ? 'Checking AI' : AI_STATUS.ready ? 'AI ready' : AI_STATUS.service === 'available' ? 'AI setup needed' : 'AI offline';
-  const moreViews = ['weakness','revision','roadmap','progress','history','shield','profile'];
+  const moreViews = ['shield','profile'];
   return '<nav class="rail">'
     + '<div class="brand" data-act="go" data-view="dash"><b>AdaptPractice</b><i>BETA</i></div>'
     + item('dash','◇','Dashboard')
     + '<button class="nav" data-act="go" data-view="course" data-clear="1" aria-current="'+(S.view==='course')+'"><span class="g">▤</span><span class="label">My courses</span></button>'
-    + '<button class="nav" data-act="new-course"><span class="g">+</span><span class="label">New course</span></button>'
-    + '<div class="railsep"></div>'
     + item('work','✎','Practice')
-    + item('weakness','◈','Weakness matrix', due)
     + item('revision','↻','Revision')
-    + item('roadmap','⌖','My roadmap')
     + item('progress','▦','Progress')
-    + item('history','☰','Learning history')
     + '<div class="railsep"></div>'
     + item('shield','⛨','Focus shield')
     + item('profile','◉','Profile')
     + '<button class="nav" data-act="logout"><span class="g">↪</span><span class="label">Sign out</span></button>'
     + '<div class="railfoot"><span class="live-pill"><span class="live-dot"></span>' + statusText + '</span><br>' + (AI_STATUS.ready ? esc(AI_STATUS.provider + ' · ' + AI_STATUS.model) : aiChecked ? esc(AI_COPY[AI_STATUS.code] || 'Configure the server-side AI provider.') : 'Checking provider and model…') + '</div>'
     + '<details class="mobile-more"><summary class="nav" aria-label="More sections"><span class="g">•••</span><span class="label">More</span></summary>'
-    + '<div class="mobile-menu">' + moreViews.map(v => item(v, ({weakness:'◈',revision:'↻',roadmap:'⌖',progress:'▦',history:'☰',shield:'⛨',profile:'◉'})[v], ({weakness:'Weakness matrix',revision:'Revision',roadmap:'My roadmap',progress:'Progress',history:'Learning history',shield:'Focus shield',profile:'Profile'})[v], v==='weakness'?due:0)).join('')
+    + '<div class="mobile-menu">' + moreViews.map(v => item(v, ({shield:'⛨',profile:'◉'})[v], ({shield:'Focus shield',profile:'Profile'})[v])).join('')
     + '<button class="nav" data-act="logout"><span class="g">↪</span><span class="label">Sign out</span></button></div></details>'
     + '</nav>';
 }
@@ -729,7 +745,7 @@ function vLanding(){
   + '<li class="win">Every mistake is classified and stored</li><li class="win">Tomorrow\'s questions come from today\'s mistakes</li></ol></div></div>'
   + '<div class="row"><button class="btn" style="background:#6BBFA5;color:#08211B;border-color:#6BBFA5;padding:12px 22px" data-act="start">Start learning</button>'
   + '<span style="color:var(--onink-2);font-size:.85rem">A free account is required to create courses and save progress. You’ll sign up first.</span></div>'
-  + (AUTH.error ? '<div class="note bad" role="alert" style="margin-top:18px">'+esc(AUTH.error)+'</div>' : (!AUTH.configured ? '<div class="note warn" role="status" style="margin-top:18px">Accounts are not available yet. Please try again later.</div>' : ''))
+  + (AUTH.error ? '<div class="note bad" role="alert" style="margin-top:18px">'+esc(AUTH.error)+' <button class="btn sec sm" data-act="auth-retry">Retry session check</button></div>' : (!AUTH.configured ? '<div class="note warn" role="status" style="margin-top:18px">Accounts are not available yet. Please try again later.</div>' : ''))
   + '<div class="landgrid">'
   + card4('Say where you are, and where you\'re going','A commerce student aiming at CAT and an engineering student aiming at a hackathon get different questions from the same page of the same book.')
   + card4('“I don\'t understand this”','Press it at 18:42 and you get an explanation of that idea — simply, as an example, as an analogy, step by step — not a summary of the whole video.')
@@ -805,7 +821,7 @@ function vDash(){
   let h = '<div class="between" style="margin-bottom:22px"><div>'
     + '<h1>'+greet()+', '+esc((p.name||'there').split(' ')[0])+'</h1>'
     + '<p class="muted" style="margin-top:6px">'+esc(p.goalText || p.goal || 'No goal set')+'</p></div>'
-    + '<div class="row"><button class="btn sec sm" data-act="focus-on">Focus mode</button><button class="btn sm" data-act="new-course">New course</button></div></div>';
+    + '<div class="row"><button class="btn sec sm" data-act="focus-on">Focus mode</button><button class="btn sm" data-act="new-course">Create course</button></div></div>';
 
   if (!D.courses.length){
     return h + '<div class="sheet empty"><h3>No courses yet</h3><p class="muted" style="max-width:44ch;margin:0 auto 16px">A course is one thing you are learning, plus the playlists and PDFs you are learning it from. Add the playlist you already had open.</p><button class="btn go" data-act="new-course">Create your first course</button></div>';
@@ -843,14 +859,15 @@ function vDash(){
     + '</div></div>';
 
   /* courses */
-  h += '<h3 style="margin:26px 0 12px">My courses</h3><div class="grid g3">';
+  h += '<div class="between" style="margin:26px 0 12px"><h3>Recent courses</h3><button class="btn sec sm" data-act="go" data-view="course" data-clear="1">All courses</button></div><div class="grid g3">';
   D.courses.forEach(c => {
     const pr = courseProgress(c);
     h += '<div class="sheet pad" style="cursor:pointer" data-act="open-course" data-c="'+c.id+'">'
       + '<h4 style="margin-bottom:4px">'+esc(c.name)+'</h4>'
       + '<div class="dim" style="margin-bottom:12px">'+esc(c.goalType||'')+'</div>'
       + '<div class="bar"><i style="width:'+pr.coverage+'%"></i></div>'
-      + '<div class="row tiny muted" style="margin-top:8px;gap:14px"><span>'+pr.done+'/'+pr.total+' lessons</span><span>Mastery '+pct(pr.mastery)+'</span></div></div>';
+      + '<div class="row tiny muted" style="margin-top:8px;gap:14px"><span>'+pr.done+'/'+pr.total+' lessons</span><span>Mastery '+pct(pr.mastery)+'</span></div>'
+      + '<div class="row" style="margin-top:12px"><button class="btn sec sm" data-act="open-course" data-c="'+c.id+'">Open course</button><button class="btn ghost sm" data-act="add-source" data-c="'+c.id+'">Add material</button></div></div>';
   });
   h += '</div>';
   return h;
@@ -869,6 +886,10 @@ function todayPlan(){
   return out.slice(0,4);
 }
 const planMinutes = () => todayPlan().reduce((s,x) => s + x.mins, 0);
+function lastCourseActivity(course){
+  const event = D.events.find(item => item.courseId === course.id);
+  return event ? dayLabel(event.t) : 'No activity yet';
+}
 
 /* ============================ NEW COURSE WIZARD ============================ */
 const MODES = [
@@ -882,7 +903,7 @@ const MODES = [
   ['custom','Custom','Describe the objective yourself']
 ];
 function vWizard(){
-  const w = S.wizard || (S.wizard = { step:1, name:'', level:'', known:'', mode:'', modeText:'', target:'', srcType:'playlist', url:'', titles:'', text:'', pages:[], fileName:'', sourceError:'' });
+  const w = S.wizard || (S.wizard = { step:1, name:'', level:'', known:'', mode:'', modeText:'', target:'', srcType:'playlist', url:'', titles:'', text:'', textByType:{}, pages:[], pagesByType:{}, fileName:'', fileFingerprint:'', sourceError:'', previewReady:false });
   const stepNames = ['Course','Present state','Goal','Source'];
   let inner = '';
   if (w.step === 1){
@@ -903,33 +924,41 @@ function vWizard(){
       + f('Target date <span class="dim">(optional)</span>','<input type="text" id="w-target" value="'+esc(w.target)+'" placeholder="December 2026">')
       + '<div class="row"><button class="btn sec" data-act="w-back">Back</button><button class="btn" data-act="w-next">Continue</button></div>';
   } else {
-    const tab = (k,l) => '<button class="chip'+(w.srcType===k?' on':'')+'" data-act="w-src" data-s="'+k+'">'+l+'</button>';
+    const tab = (k,l) => '<button class="chip'+(w.srcType===k?' on':'')+'" data-act="w-src" data-s="'+k+'"'+(S.busy?' disabled':'')+'>'+l+'</button>';
     let src = '';
     if (w.srcType === 'playlist'){
       src = f('Playlist link','<input type="url" id="w-url" value="'+esc(w.url)+'" placeholder="https://www.youtube.com/playlist?list=…">')
-        + '<div class="note">Paste just the link and press Build — the playlist plays right here, and each video\'s real title fills itself in as you watch it. No titles required, no trip to YouTube.</div>'
-        + '<details style="margin:12px 0"><summary class="dim" style="cursor:pointer;font-size:.85rem">Prefer real titles from the start? Add them here</summary>'
-        + '<div class="sheet pad" style="margin-top:10px;background:var(--wash)">'
-        + '<b style="font-size:.85rem">Paste the whole playlist sidebar</b>'
-        + '<p class="muted tiny" style="margin:6px 0 10px">On the playlist\'s YouTube page, click into the list of videos, press Ctrl/Cmd+A then Ctrl/Cmd+C, and paste the block below — durations and view counts get stripped automatically.</p>'
-        + '<textarea id="w-rawpaste" style="min-height:100px" placeholder="Paste the raw copied playlist block here"></textarea>'
-        + '<div class="row" style="margin-top:8px"><button class="btn sec sm" data-act="w-clean-paste" type="button">Clean up into a title list ↓</button>'
-        + (S.cleanMsg ? '<span class="dim tiny">'+esc(S.cleanMsg)+'</span>' : '') + '</div></div>'
-        + f('Video titles, one per line','<textarea id="w-titles" style="min-height:120px" placeholder="Leave this empty to start immediately — or list titles here to have them ready from lesson one.">'+esc(w.titles)+'</textarea>')
-        + '</details>';
+        + '<div class="note">AdaptPractice reads actual playlist items from the server-side YouTube Data API. The preview will show each video\'s title, position and link before anything is saved.</div>';
     } else if (w.srcType === 'video'){
       src = f('Video link','<input type="url" id="w-url" value="'+esc(w.url)+'" placeholder="https://www.youtube.com/watch?v=…">')
-        + f('Transcript or your notes <span class="dim">(optional but makes every question source-grounded)</span>','<textarea id="w-text" style="min-height:140px" placeholder="Paste the transcript from YouTube\'s “Show transcript” panel, or your own notes.">'+esc(w.text)+'</textarea>');
-    } else {
-      src = '<div class="field"><label class="f">PDF file</label><input type="file" id="w-pdf" accept="application/pdf"><div class="dim" id="w-pdfstat" style="margin-top:6px">'+(w.fileName ? esc(w.fileName)+' · '+w.text.length.toLocaleString()+' characters read' : 'The text is read inside this browser. The file is never uploaded anywhere.')+'</div></div>'
+        + f('Transcript or your notes <span class="dim">(optional)</span>','<textarea id="w-text" style="min-height:140px" placeholder="Paste the transcript from YouTube\'s “Show transcript” panel, or your own notes.">'+esc(w.text)+'</textarea>')
+        + '<p class="dim">Video metadata and transcript availability are checked separately. The YouTube Data API does not provide a transcript; without one, summaries and practice will be labeled as general knowledge.</p>';
+    } else if (w.srcType === 'pdf'){
+      src = '<div class="field"><label class="f" for="w-pdf">PDF file</label><input type="file" id="w-pdf" accept="application/pdf"><div class="dim" id="w-pdfstat" role="status" aria-live="polite" style="margin-top:6px">'+(w.fileName ? esc(w.fileName)+' · '+w.text.length.toLocaleString()+' characters read' : 'The PDF is read locally; extracted text is saved with this course and syncs to your account.')+'</div></div>'
         + f('Or paste the text','<textarea id="w-text" style="min-height:140px" placeholder="Paste chapter text here if the PDF is scanned or the reader cannot open it.">'+esc(w.text)+'</textarea>');
+    } else {
+      src = f('Pasted text or notes','<textarea id="w-text" style="min-height:180px" placeholder="Paste your notes or learning material here.">'+esc(w.text)+'</textarea>');
     }
+    const preview = w.previewReady ? '<div class="sheet pad source-preview" id="w-preview" style="margin:14px 0;background:var(--wash)">'
+      + '<h3>Review before adding</h3>'
+      + (w.srcType==='playlist' ? '<p class="tiny muted">'+w.playlistItems.length+' actual video'+(w.playlistItems.length===1?'':'s')+' in playlist order.</p>'+(w.unavailableCount?'<p class="tiny muted">'+w.unavailableCount+' unavailable/deleted/private item(s) were skipped.</p>':'')+'<ol class="source-preview-list">'+w.playlistItems.slice(0,20).map(item => {
+          const duplicate = (w.duplicateItems||[]).find(entry => entry.index === item.index);
+          return '<li><a href="'+esc(item.url)+'" target="_blank" rel="noopener noreferrer">'+esc(item.title)+'</a><span class="dim"> · #'+item.index+'</span>'+(duplicate?'<span class="tag md">Duplicate of #'+duplicate.firstIndex+'</span>':'')+'</li>';
+        }).join('')+'</ol>'+(w.playlistItems.length>20?'<p class="dim">Showing first 20 of '+w.playlistItems.length+' videos.</p>':'')
+      : w.srcType==='video' ? '<p class="tiny muted"><b>Title:</b> '+esc(w.videoMetadata?.title || 'Metadata unavailable')+'</p><p class="tiny muted"><b>Transcript:</b> '+(w.transcriptStatus==='available'?'Available in supplied text':w.transcriptStatus==='manual_unindexed'?'Supplied notes have no timestamps':'Unavailable; source-based summaries cannot be produced')+'</p>'+(w.metadataError?'<p class="tiny muted">'+esc(w.metadataError)+'</p>':'')
+      : '<p class="tiny muted"><b>Source:</b> '+esc(w.fileName || (w.srcType==='pdf'?'Pasted PDF text':'Pasted notes'))+(w.pages?.length?' · '+w.pages.length+' pages':'')+'</p><pre class="source-preview-text">'+esc((w.pages?.find(page=>page.text.trim())?.text || w.text || '').slice(0,900))+'</pre>')
+      + (w.duplicateTitle ? '<div class="note warn" role="status">This source is already in this course as “'+esc(w.duplicateTitle)+'”. Return to the course instead of adding it again.</div>' : '')
+      + '</div>' : '';
+    src = '<fieldset class="source-fields"'+(S.busy?' disabled':'')+'>'+src+'</fieldset>';
     inner = '<h2>Bring your material</h2>'
-      + '<div class="row" style="gap:8px;margin-bottom:16px">'+tab('playlist','YouTube playlist')+tab('video','Single video')+tab('pdf','PDF')+'</div>'
+      + '<div class="row source-tabs" style="gap:8px;margin-bottom:16px">'+tab('playlist','YouTube playlist')+tab('video','Single video')+tab('pdf','PDF')+tab('text','Pasted notes')+'</div>'
       + src
       + (w.sourceError ? '<div class="note bad" role="alert" style="margin-bottom:14px">'+esc(w.sourceError)+'</div>' : '')
+      + (w.importState ? '<p class="dim" role="status">'+esc(w.importState)+'</p>' : '')
+      + preview
       + (SAMPLE ? '' : '<div class="note bad">AI is not available in this view, so the course map and questions cannot be generated. You can still create the course and add material.</div>')
-      + '<div class="row"><button class="btn sec" data-act="w-back">Back</button><button class="btn go" data-act="w-build"'+(S.busy?' disabled':'')+'>'+(S.busy ? '<span class="spin"></span> '+esc(S.busy) : 'Build the course')+'</button></div>';
+      + '<div class="row"><button class="btn sec" data-act="w-back"'+(S.busy?' disabled':'')+'>Back</button><button class="btn go" data-act="w-build"'+((S.busy || w.duplicateTitle)?' disabled':'')+'>'+(S.busy ? '<span class="spin"></span> '+esc(S.busy) : w.previewReady ? 'Confirm and add material' : w.sourceError ? 'Retry preview' : 'Preview source')+'</button>'
+      + (w.addTo ? '<button class="btn ghost" data-act="cancel-source" data-c="'+w.addTo+'"'+(S.busy?' disabled':'')+'>Back to course</button>' : '')+'</div>';
   }
   return '<div style="max-width:660px">'
     + '<div class="steps">'+stepNames.map((n,i) => '<span class="'+(w.step===i+1?'on':'')+'">'+n+'</span>').join('')+'</div>'
@@ -942,10 +971,17 @@ function vCourse(){
   const c = getCourse(S.course);
   if (!c){
     if (!D.courses.length) return '<div class="sheet empty"><h3>No courses yet</h3><button class="btn go" data-act="new-course">Create a course</button></div>';
-    return '<h1>My courses</h1><div class="grid g3" style="margin-top:16px">' + D.courses.map(x => {
+    return '<div class="between"><div><h1>My courses</h1><p class="muted" style="margin-top:6px">Pick up where you left off or add a new source to an existing course.</p></div><button class="btn go" data-act="new-course">Create course</button></div>'
+      + '<div class="field" style="max-width:440px;margin-top:18px"><label class="f" for="course-search">Search courses</label><input type="search" id="course-search" value="'+esc(S.courseSearch)+'" placeholder="Search by course name"></div>'
+      + '<div class="grid g3" style="margin-top:16px">' + D.courses.filter(x => x.name.toLowerCase().includes(String(S.courseSearch||'').toLowerCase())).map(x => {
       const pr = courseProgress(x);
-      return '<div class="sheet pad" data-act="open-course" data-c="'+x.id+'" style="cursor:pointer"><h4>'+esc(x.name)+'</h4><div class="dim" style="margin:4px 0 12px">'+esc(x.goalType||'')+'</div><div class="bar"><i style="width:'+pr.coverage+'%"></i></div><div class="tiny muted" style="margin-top:8px">'+pr.done+'/'+pr.total+' lessons · mastery '+pct(pr.mastery)+'</div></div>';
-    }).join('') + '</div>';
+      return '<div class="sheet pad course-card" data-course-name="'+esc(x.name.toLowerCase())+'"><h4>'+esc(x.name)+'</h4><div class="dim" style="margin:4px 0 12px">'+esc(x.modeText || x.goalType || 'No goal set')+'</div>'
+        + '<div class="tiny muted">'+(x.sources||[]).length+' material'+((x.sources||[]).length===1?'':'s')+' · '+pr.done+'/'+pr.total+' lessons</div>'
+        + '<div class="bar" style="margin-top:8px"><i style="width:'+pr.coverage+'%"></i></div>'
+        + '<div class="dim" style="margin-top:8px">Last activity: '+esc(lastCourseActivity(x))+'</div>'
+        + '<div class="row" style="margin-top:12px"><button class="btn sec sm" data-act="open-course" data-c="'+x.id+'">Open course</button><button class="btn ghost sm" data-act="add-source" data-c="'+x.id+'">Add material</button></div></div>';
+    }).join('') + '</div>'
+      + '<div class="sheet empty" id="course-no-results" style="display:none;margin-top:16px"><h3>No matching courses</h3><p class="muted">Try a different course name.</p></div>';
   }
   const pr = courseProgress(c);
   const weak = weakList(c).filter(x => x.status === 'weakness' || x.status === 'watch').slice(0,3);
@@ -957,6 +993,12 @@ function vCourse(){
     + '<p class="muted" style="margin-top:6px">'+esc(c.modeText || (MODES.find(m=>m[0]===c.goalType)||[])[1] || '')+'</p></div>'
     + '<div class="row"><button class="btn sec sm" data-act="add-source" data-c="'+c.id+'">Add material</button>'
     + (nextLesson ? '<button class="btn sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+nextLesson.id+'">Open next lesson</button>' : '') + '</div></div>';
+
+  const tabs = [['overview','Overview'],['materials','Materials'],['lessons','Lessons'],['practice','Practice'],['weaknesses','Weaknesses'],['roadmap','Roadmap'],['progress','Progress']];
+  h += '<nav class="course-tabs" aria-label="Course sections" role="tablist">'
+    + tabs.map(([key,label]) => '<button class="course-tab" role="tab" aria-selected="'+(S.courseTab===key)+'" data-act="course-tab" data-tab="'+key+'">'+label+'</button>').join('')
+    + '</nav>';
+  if (S.courseTab !== 'overview') return h + vCourseTab(c, S.courseTab);
 
   h += '<div class="grid g3" style="margin-bottom:18px">'
     + kpi('Lessons done', pr.done + ' / ' + pr.total, pr.coverage)
@@ -974,8 +1016,8 @@ function vCourse(){
   /* course map */
   h += '<div class="sheet pad"><div class="between"><h3>Course map</h3><span class="dim">'+(c.sources||[]).length+' source'+((c.sources||[]).length===1?'':'s')+'</span></div>';
   (c.sources||[]).forEach(s => {
-    h += '<div style="margin-top:14px"><div class="row tiny muted" style="gap:6px"><span class="tag">'+(s.type==='pdf'?'PDF':s.type==='playlist'?'Playlist':'Video')+'</span><span>'+esc(s.title)+'</span>'
-      + (s.status==='missing_metadata' ? '<span class="tag hi">Video metadata unavailable</span>' : '')
+    h += '<div style="margin-top:14px"><div class="row tiny muted" style="gap:6px"><span class="tag">'+(s.type==='pdf'?'PDF':s.type==='playlist'?'Playlist':s.type==='text'?'Notes':'Video')+'</span><span>'+esc(s.title)+'</span>'
+      + (s.type==='video' && s.metadataAvailable===false ? '<span class="tag hi">Video metadata unavailable</span>' : '')
       + (s.transcriptStatus==='missing' ? '<span class="tag md">Transcript unavailable</span>' : '')
       + (s.transcriptStatus==='manual_unindexed' ? '<span class="tag md">Manual notes · no timestamps</span>' : '')
       + (s.dynamic ? '<span class="dim">· titles fill in as you watch</span>' : '') + '</div><ul class="playlist" style="margin-top:6px">';
@@ -1010,6 +1052,37 @@ function vCourse(){
   h += '</div></div>';
   return h;
 }
+function vCourseTab(c, tab){
+  const sources = c.sources || [];
+  if (tab === 'materials') {
+    return '<div class="sheet pad"><div class="between"><div><h2>Materials</h2><p class="muted">Sources are grouped in lesson order. Reordering sources does not change lesson or assignment progress.</p></div><button class="btn go" data-act="add-source" data-c="'+c.id+'">+ Add material</button></div>'
+      + (sources.length ? sources.map((source,index) => '<section class="source-card"><div class="between"><div><span class="tag">'+esc(source.type==='playlist'?'Playlist':source.type==='video'?'Video':source.type==='pdf'?'PDF':'Notes')+'</span> <b>'+esc(source.title)+'</b><div class="dim">'+(source.lessons||[]).length+' lessons'+(source.transcriptStatus==='missing'?' · transcript unavailable':'')+'</div></div>'
+        + '<div class="row"><button class="btn ghost sm" data-act="rename-source" data-c="'+c.id+'" data-s="'+source.id+'">Rename</button><button class="btn ghost sm" data-act="source-up" data-c="'+c.id+'" data-s="'+source.id+'"'+(index===0?' disabled':'')+' aria-label="Move source up">↑</button><button class="btn ghost sm" data-act="source-down" data-c="'+c.id+'" data-s="'+source.id+'"'+(index===sources.length-1?' disabled':'')+' aria-label="Move source down">↓</button><button class="btn ghost sm" data-act="remove-source" data-c="'+c.id+'" data-s="'+source.id+'">Remove</button></div></div>'
+        + '<ol class="source-preview-list">'+(source.lessons||[]).map(lesson => '<li><button class="btn ghost sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+lesson.id+'">'+esc(lesson.title)+'</button>'+(lesson.page?' <span class="dim">PDF page '+lesson.page+'</span>':'')+(lesson.url?' <a href="'+esc(lesson.url)+'" target="_blank" rel="noopener noreferrer">Video</a>':'')+'</li>').join('')+'</ol></section>').join('')
+        : '<div class="sheet empty"><h3>No materials yet</h3><p class="muted">Add a playlist, video, PDF or notes to this course.</p><button class="btn go" data-act="add-source" data-c="'+c.id+'">Add material</button></div>')+'</div>';
+  }
+  if (tab === 'lessons') {
+    return '<div class="sheet pad"><h2>Lessons</h2><p class="muted">Lessons stay grouped by source; adding materials will not reset completion.</p>'
+      + (sources.length ? sources.map(source => '<section class="source-card"><h3>'+esc(source.title)+'</h3><ul class="playlist">'+(source.lessons||[]).map(lesson => '<li><span class="mk '+(lesson.done?'done':'')+'">'+(lesson.done?'✓':'○')+'</span><button class="btn ghost sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+lesson.id+'">'+esc(lesson.title)+'</button>'+(lesson.page?' <span class="dim">page '+lesson.page+'</span>':'')+'</li>').join('')+'</ul></section>').join('') : '<p class="muted">Add a source to create your first lessons.</p>')+'</div>';
+  }
+  if (tab === 'practice') {
+    return '<div class="sheet pad"><div class="between"><div><h2>Practice</h2><p class="muted">Assignments and results remain attached to this course.</p></div>'+(SAMPLE?'<button class="btn go" data-act="new-assign" data-c="'+c.id+'">Generate practice</button>':'')+'</div>'
+      + ((c.assignments||[]).length ? '<ul class="playlist">'+c.assignments.map(item => '<li>'+esc(item.title||'Practice set')+' <span class="dim">'+dayLabel(item.created)+'</span> '+(item.submitted?'<span class="tag">'+item.score+'/'+item.questions.length+'</span>':'<button class="btn sec sm" data-act="open-work" data-c="'+c.id+'" data-a="'+item.id+'">Resume</button>')+'</li>').join('')+'</ul>' : '<p class="muted">No practice sets yet.</p>')+'</div>';
+  }
+  if (tab === 'weaknesses') {
+    const weak = weakList(c);
+    return '<div class="sheet pad"><h2>Weaknesses</h2><p class="muted">Repeated evidence, not a single missed question, flags a weakness.</p>'
+      + (weak.length ? '<ul class="playlist">'+weak.map(item => '<li><span>'+esc(item.name)+'</span> <span class="tag">'+pct(item.mastery)+'</span><button class="btn sec sm" data-act="target" data-c="'+c.id+'" data-k="'+esc(item.name)+'">Practice</button></li>').join('')+'</ul>' : '<p class="muted">No concepts need revision yet.</p>')+'</div>';
+  }
+  if (tab === 'roadmap') {
+    return '<div class="sheet pad"><div class="between"><div><h2>Roadmap</h2><p class="muted">'+esc(c.gap||'A sequence of steps toward your course goal.')+'</p></div>'+(SAMPLE?'<button class="btn go" data-act="gen-roadmap" data-c="'+c.id+'">Update roadmap</button>':'')+'</div>'
+      + ((c.roadmap||[]).length ? '<ol>'+c.roadmap.map(step => '<li style="margin:10px 0"><b>'+esc(step.title)+'</b><div class="muted">'+esc(step.why||'')+'</div></li>').join('')+'</ol>' : '<p class="muted">Generate a roadmap after adding material.</p>')+'</div>';
+  }
+  const progress = courseProgress(c);
+  const events = D.events.filter(event => event.courseId === c.id).slice(0,10);
+  return '<div class="sheet pad"><h2>Progress</h2><div class="grid g3" style="margin-top:16px">'+kpi('Lessons complete',progress.done+' / '+progress.total,progress.coverage)+kpi('Average mastery',pct(progress.mastery),progress.mastery)+kpi('Tracked concepts',String(progress.tracked),null)+'</div>'
+    + '<h3 style="margin-top:24px">Learning history</h3>'+(events.length?'<ul class="playlist">'+events.map(event=>'<li>'+esc(event.label||event.type)+' <span class="dim">'+dayLabel(event.t)+' · '+esc(event.type)+'</span></li>').join('')+'</ul>':'<p class="muted">Course activity will appear here.</p>')+'</div>';
+}
 const kpi = (label, val, bar) => '<div class="sheet pad"><div class="pill">'+esc(label)+'</div><div class="kpi" style="margin:8px 0">'+esc(val)+'</div>'
   + (bar==null ? '' : '<div class="bar '+(bar<50?'bad':bar<75?'warn':'')+'"><i style="width:'+clamp(bar,0,100)+'%"></i></div>') + '</div>';
 function sourceLabel(c, src){
@@ -1036,11 +1109,12 @@ function vLesson(){
   const c = getCourse(S.course); if (!c) return '<div class="pad">Course not found.</div>';
   const found = rawLesson(c, S.lesson); if (!found) return '<div class="pad">Lesson not found.</div>';
   const { src, lesson } = found;
+  const hasSourceText = Boolean(src.text && (src.type !== 'video' || (src.transcriptSegments||[]).length));
   const list = allLessons(c);
   const i = list.findIndex(l => l.id === lesson.id);
   const prev = list[i-1], next = list[i+1];
   const isPlaylistLesson = src.type === 'playlist';
-  const vid = isPlaylistLesson ? null : (ytVideoId(lesson.url) || ytVideoId(src.url));
+  const vid = ytVideoId(lesson.url) || (isPlaylistLesson ? null : ytVideoId(src.url));
   const listId = src.listId || ytListId(src.url);
   const selectedIndex = Number.isInteger(lesson.index) && lesson.index > 0 ? lesson.index : 1;
   const a = (c.assignments||[]).find(x => x.id === S.work);
@@ -1075,9 +1149,10 @@ function vLesson(){
       + '<div class="playnote" id="playnote"><span>The embedded player is blocked here, so this lesson opens directly on YouTube instead.</span>'
       + '<a href="'+esc(watchUrl)+'" target="_blank" rel="noopener">Open lesson ' + (lesson.index||1) + ' on YouTube</a>'
       + '<span class="dim">Practice, the timestamp box and everything else on this page still work normally.</span></div>';
-  } else if (src.type === 'pdf'){
+  } else if (src.type === 'pdf' || src.type === 'text'){
     stage = '<div class="stage" style="background:var(--sheet);aspect-ratio:auto;min-height:280px;overflow-y:auto;padding:22px">'
       + '<h3 style="font-family:var(--serif)">'+esc(lesson.title)+'</h3>'
+      + (lesson.page?'<p class="dim">PDF page '+lesson.page+'</p>':'')
       + '<div class="md muted" style="margin-top:10px;font-size:.9rem;white-space:pre-wrap;max-width:70ch">'+esc((lesson.text||src.text||'').slice(0,4000))+'</div></div>';
   } else {
     stage = '<div class="stage"><div class="stagefall">No playable link on this lesson — the playlist link did not contain a list id. Everything else on this page still works.</div></div>';
@@ -1100,7 +1175,7 @@ function vLesson(){
         const cc = c.concepts[k]; const band = cc ? ({high:'hi',medium:'md',low:'lo'}[prioBand(priority(cc))]) : '';
         return '<span class="tag '+band+'">'+esc(k)+(cc&&cc.attempts?' '+pct(cc.mastery):'')+'</span>';
       }).join('')+'</div>' : '')
-    + (lesson.summary ? '<div class="sheet pad md" style="margin-bottom:14px"><h3>Summary</h3><div style="margin-top:8px;font-size:.9rem"><p>'+mdLite(lesson.summary)+'</p></div></div>'
+    + (lesson.summary ? '<div class="sheet pad md" style="margin-bottom:14px"><div class="between"><h3>Summary</h3><span class="tag">'+(hasSourceText?'Based on source text':'General knowledge — no transcript text')+'</span></div><div style="margin-top:8px;font-size:.9rem"><p>'+mdLite(lesson.summary)+'</p></div></div>'
         : (SAMPLE ? '<button class="btn sec sm" data-act="summarize" data-c="'+c.id+'" data-l="'+lesson.id+'" style="margin-bottom:14px">'+(S.busy==='summary'?'<span class="spin"></span> Reading…':'Summarise this lesson')+'</button>' : ''))
     + '<div class="sheet pad"><h4 style="margin-bottom:8px">Course map</h4><ul class="playlist">'
     + list.map(l => '<li data-act="open-lesson" data-c="'+c.id+'" data-l="'+l.id+'" data-lesson-li="'+l.id+'" aria-current="'+(l.id===lesson.id)+'"><span class="mk '+(l.done?'done':'')+'">'+(l.done?'✓':l.id===lesson.id?'▸':'○')+'</span><span class="lbl">'+esc(l.title)+'</span>'+(l.auto?' <span class="dim tiny">auto</span>':'')+'</li>').join('')
@@ -1497,16 +1572,12 @@ async function buildCourse(w){
   const titles = src === 'playlist' ? (w.titles||'').split('\n').map(s=>s.trim()).filter(Boolean) : [];
 
   if (src === 'playlist' && titles.length){
-    // The learner's pasted list IS the playlist — exact titles, exact order,
-    // exact count, one-to-one with real positions in the real playlist.
-    // Claude is only asked to tag concepts onto each entry, never to
-    // shorten, merge, reorder or drop any of them, however long the list
-    // is — a fixed lesson cap here would silently break that correspondence
-    // for anything past the cap.
-    const prompt = 'A learner pasted the full, ordered list of video titles from their own YouTube playlist. Attach concept tags to each one.\n\n'
+    // The authoritative playlist records come from YouTube Data API; AI only
+    // annotates their titles and never decides which lessons are imported.
+    const prompt = 'AdaptPractice fetched these actual YouTube playlist videos and their order from the YouTube Data API. Attach concept tags to each video title.\n\n'
       + 'COURSE: ' + w.name + '\nLEARNER LEVEL: ' + (w.level||'unspecified') + '\nALREADY KNOWS: ' + (w.known||'unspecified')
       + '\nPURPOSE: ' + (MODE_BRIEF[w.mode] || 'general learning') + ' ' + (w.modeText||'') + '\n\n'
-      + 'VIDEO TITLES, IN ORDER (' + titles.length + ' total — this is the real playlist order, do not resequence it):\n'
+      + 'VIDEO TITLES, IN ORDER (' + titles.length + ' total — preserve the API order):\n'
       + titles.map((t,i)=>(i+1)+'. '+t).join('\n') + '\n\n'
       + 'Rules: do not shorten, merge, reorder, renumber or drop any title, no matter how many there are. Do not invent facts about a video from its title alone beyond a reasonable concept tag.\n\n'
       + 'Return JSON of this exact shape:\n'
@@ -1516,12 +1587,44 @@ async function buildCourse(w){
       + '"conceptsByLesson" MUST have exactly ' + titles.length + ' entries — one per title above, in the same order, each 2 to 5 short concept names. At most 10 roadmap steps. ' + JSON_RULE;
     return askJson(prompt, { modelTier:'default' });
   }
+  function validateCourseMap(output, wizard){
+    if (!output || typeof output !== 'object' || Array.isArray(output)) throw new Error('The course map was not valid. Your source is still ready; retry the import.');
+    if ((output.gap !== undefined && typeof output.gap !== 'string') || (output.roadmap !== undefined && !Array.isArray(output.roadmap))) throw new Error('The course map response was incomplete. Your source is still ready; retry the import.');
+    const validConcepts = value => Array.isArray(value) && value.every(item => typeof item === 'string');
+    const map = { gap:typeof output.gap === 'string' ? output.gap : '', roadmap:[], lessons:[] };
+    if (Array.isArray(output.roadmap)) {
+      map.roadmap = output.roadmap.map(step => {
+        if (!step || typeof step.title !== 'string' || typeof step.why !== 'string' || !validConcepts(step.concepts)) throw new Error('The course roadmap was incomplete. Your source is still ready; retry the import.');
+        return { title:step.title, why:step.why, concepts:step.concepts.filter(Boolean).slice(0,8) };
+      }).slice(0,10);
+    }
+    if (wizard.srcType === 'playlist') {
+      if (output.conceptsByLesson !== undefined && (!Array.isArray(output.conceptsByLesson) || output.conceptsByLesson.length !== wizard.playlistItems.length || !output.conceptsByLesson.every(validConcepts))) {
+        throw new Error('The AI response did not match the playlist video list. Nothing was added; retry the import.');
+      }
+      map.conceptsByLesson = output.conceptsByLesson || [];
+      return map;
+    }
+    if (!Array.isArray(output.lessons) || output.lessons.some(lesson =>
+      !lesson || typeof lesson.title !== 'string' || !validConcepts(lesson.concepts)
+      || (lesson.page != null && (!Number.isInteger(Number(lesson.page)) || Number(lesson.page) < 1))
+    )) throw new Error('The course map was incomplete. Your source is still ready; retry the import.');
+    map.lessons = output.lessons.slice(0,60).map(lesson => ({
+      title:lesson.title.trim(),
+      concepts:lesson.concepts.filter(Boolean).slice(0,6),
+      page:lesson.page == null ? null : Number(lesson.page),
+      proposed:lesson.proposed === true
+    }));
+    return map;
+  }
 
   let sourceBlock;
   if (src === 'playlist'){
     sourceBlock = 'The learner gave only a playlist link, no titles, and no transcript is available. Do not invent video titles for a playlist you cannot see — return "lessons" as an empty array. Still write the gap analysis and roadmap from the course name, level and goal alone.';
   } else if (src === 'video'){
     sourceBlock = excerpt ? 'Transcript or notes for one video:\n"""\n' + excerpt + '\n"""' : 'A single video with no transcript supplied. Propose the sections such a lecture usually has, and say they are proposed.';
+  } else if (src === 'text'){
+    sourceBlock = 'Pasted notes or learning material:\n"""\n' + excerpt + '\n"""';
   } else {
     sourceBlock = excerpt ? 'Text extracted from the learner\'s PDF:\n"""\n' + excerpt + '\n"""' : 'No text was extracted.';
   }
@@ -1659,6 +1762,24 @@ async function gradeAssignment(c, a){
     + JSON_RULE;
   return askJson(prompt, { modelTier:'default' });
 }
+function validateGradeResponse(output, questionCount){
+  const verdicts = new Set(['correct','partial','incorrect']);
+  const confidence = new Set(['low','medium','high']);
+  if (!output || typeof output !== 'object' || Array.isArray(output) || typeof output.report !== 'string' || !Array.isArray(output.results) || output.results.length !== questionCount) {
+    throw new Error('The grading response was incomplete. Your answers have not been submitted; retry grading.');
+  }
+  const seen = new Set();
+  const results = output.results.map(item => {
+    if (!item || !Number.isInteger(item.i) || item.i < 0 || item.i >= questionCount || seen.has(item.i)
+      || !verdicts.has(item.verdict) || !confidence.has(item.confidence) || typeof item.feedback !== 'string' || !item.feedback.trim()) {
+      throw new Error('The grading response could not be validated. Your answers have not been submitted; retry grading.');
+    }
+    seen.add(item.i);
+    return item;
+  });
+  if (seen.size !== questionCount) throw new Error('The grading response did not cover every question. Your answers have not been submitted; retry grading.');
+  return { results, report:normalizeSummary(output.report) };
+}
 
 async function explainMoment(c, lesson, at, mode, prior, onText){
   const modeLine = {
@@ -1713,7 +1834,31 @@ async function summarizeLesson(c, lesson){
     + '\nUse short headings and bullets: definition, key points, the formula or rule if there is one, an example, and what tends to be asked about it. '
     + 'Stay inside the source. Under 300 words.';
   const r = await ask(prompt, { modelTier:'default', cache:{ gcTime: 86400000 } });
-  return r.text;
+  return normalizeSummary(r.text);
+}
+function normalizeSummary(value){
+  const text = String(value || '').trim();
+  if (!text) throw new Error('The summary was empty. Retry.');
+  const jsonText = text.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim();
+  if (jsonText.startsWith('{') || jsonText.startsWith('[')) {
+    let data;
+    try { data = JSON.parse(jsonText); }
+    catch(error){ throw new Error('The summary response was malformed. Retry the summary.'); }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('The summary response had an unsupported format. Retry the summary.');
+    const labels = [
+      ['Definition', data.definition],
+      ['Key points', data.keyPoints || data.key_points || data.concepts],
+      ['Formula or rule', data.formula || data.rule],
+      ['Example', data.example || data.examples],
+      ['Remember', data.takeaways || data.whatToRemember]
+    ];
+    const sections = labels.filter(([,content]) => typeof content === 'string' ? content.trim() : Array.isArray(content) && content.length)
+      .map(([label,content]) => '## '+label+'\n'+(Array.isArray(content) ? content.map(item => '- '+String(item)).join('\n') : String(content).trim()));
+    if (!sections.length) throw new Error('The summary response did not contain readable sections. Retry the summary.');
+    return sections.join('\n\n').slice(0,12000);
+  }
+  if (/^\s*[{[]/.test(text) || text.length > 12000) throw new Error('The summary response was not readable. Retry with a shorter lesson.');
+  return text;
 }
 
 async function genRoadmap(c){
@@ -1721,7 +1866,11 @@ async function genRoadmap(c){
     + learnerCtx(c) + '\nMATERIAL IN THE COURSE: ' + allLessons(c).map(l=>l.title).join('; ').slice(0,2000) + '\n\n'
     + 'Do not assume they can start at target level. Name any missing prerequisite explicitly and put it first.\n'
     + 'Return JSON:\n{"gap":"2 to 3 sentences","roadmap":[{"title":"string","why":"one sentence","concepts":["names that match the course concepts where possible"]}]}\nAt most 10 steps. ' + JSON_RULE;
-  return askJson(prompt, { modelTier:'default' });
+  const output = await askJson(prompt, { modelTier:'default' });
+  if (!output || typeof output.gap !== 'string' || !Array.isArray(output.roadmap) || output.roadmap.some(step =>
+    !step || typeof step.title !== 'string' || typeof step.why !== 'string' || !Array.isArray(step.concepts) || !step.concepts.every(name => typeof name === 'string')
+  )) throw new Error('The roadmap response was incomplete. Retry the roadmap.');
+  return { gap:output.gap, roadmap:output.roadmap.slice(0,10).map(step => ({ title:step.title, why:step.why, concepts:step.concepts.slice(0,8) })) };
 }
 
 /* ======================= ACTIONS ======================= */
@@ -1742,6 +1891,7 @@ document.addEventListener('click', async e => {
 
   switch(a){
     case 'start': AUTH.form = {}; showAuth('signup'); break;
+    case 'auth-retry': AUTH.error = ''; AUTH.loading = true; render(); await loadAuthState(); break;
     case 'auth-back': showLanding(); break;
     case 'auth-mode': showAuth(t.dataset.mode); break;
     case 'logout': {
@@ -1757,7 +1907,7 @@ document.addEventListener('click', async e => {
     case 'import-local': await finishLegacyImport(true); break;
     case 'start-fresh': await finishLegacyImport(false); break;
     case 'sync-retry': await flushSnapshotSave(); break;
-    case 'go': if (t.dataset.clear) S.course = null; go(t.dataset.view); break;
+    case 'go': if (t.dataset.clear) { S.course = null; S.courseTab = 'overview'; } go(t.dataset.view); break;
     case 'theme': D.settings.theme = t.dataset.t; save(); applyTheme(); render(); break;
     case 'focus-on': D.settings.focus = true; save(); render(); toast('Focus mode on. Navigation is hidden.'); break;
     case 'focus-off': D.settings.focus = false; save(); render(); break;
@@ -1777,8 +1927,9 @@ document.addEventListener('click', async e => {
     }
 
     /* course wizard */
-    case 'new-course': S.wizard = { step:1, name:'', level:'', known:'', mode:'', modeText:'', target:'', srcType:'playlist', url:'', titles:'', text:'', fileName:'' }; S.cleanMsg = ''; go('newcourse'); break;
-    case 'add-source': S.wizard = { step:4, addTo:c.id, name:c.name, level:c.level, known:c.known, mode:c.goalType, modeText:c.modeText, srcType:'playlist', url:'', titles:'', text:'', fileName:'' }; S.cleanMsg = ''; go('newcourse'); break;
+    case 'new-course': S.wizard = { step:1, name:'', level:'', known:'', mode:'', modeText:'', target:'', srcType:'playlist', url:'', titles:'', text:'', textByType:{}, pages:[], pagesByType:{}, fileName:'', fileFingerprint:'', sourceError:'', previewReady:false }; S.cleanMsg = ''; go('newcourse'); break;
+    case 'add-source': S.wizard = { step:4, addTo:c.id, name:c.name, level:c.level, known:c.known, mode:c.goalType, modeText:c.modeText, srcType:'playlist', url:'', titles:'', text:'', textByType:{}, pages:[], pagesByType:{}, fileName:'', fileFingerprint:'', sourceError:'', previewReady:false }; S.cleanMsg = ''; go('newcourse'); break;
+    case 'cancel-source': S.wizard = null; S.courseTab = 'materials'; go('course', { course:t.dataset.c }); break;
     case 'w-next': {
       const w = S.wizard;
       if (w.step === 1){ w.name = val('w-name'); if (!w.name){ toast('Give the course a name.'); return; } }
@@ -1793,7 +1944,21 @@ document.addEventListener('click', async e => {
       w.step--; render(); break;
     }
     case 'w-mode': S.wizard.modeText = val('w-modetext'); S.wizard.target = val('w-target'); S.wizard.mode = t.dataset.m; render(); break;
-    case 'w-src': grabSource(); S.wizard.srcType = t.dataset.s; render(); break;
+    case 'w-src': {
+      const w = S.wizard;
+      grabSource();
+      w.textByType = w.textByType || {};
+      w.textByType[w.srcType] = w.text;
+      w.pagesByType = w.pagesByType || {};
+      w.pagesByType[w.srcType] = w.pages || [];
+      w.pdfToken = null;
+      w.srcType = t.dataset.s;
+      w.text = w.textByType[w.srcType] || '';
+      w.previewReady = false; w.previewSignature = ''; w.sourceError = ''; w.importState = ''; w.duplicateTitle = '';
+      w.pages = w.pagesByType[w.srcType] || [];
+      render();
+      break;
+    }
     case 'extend-playlist': {
       const src = (c.sources||[]).find(s => s.id === t.dataset.s);
       if (!src) return;
@@ -1820,8 +1985,34 @@ document.addEventListener('click', async e => {
     case 'w-build': await buildFromWizard(); break;
 
     /* course + lesson */
-    case 'open-course': go('course', { course:t.dataset.c }); break;
-    case 'pick-course': S.course = t.dataset.c; S.work = null; render(); break;
+    case 'open-course': S.courseTab = 'overview'; go('course', { course:t.dataset.c }); break;
+    case 'course-tab': S.courseTab = t.dataset.tab; render(); break;
+    case 'pick-course': S.course = t.dataset.c; S.courseTab = 'overview'; S.work = null; render(); break;
+    case 'rename-source': {
+      const source = (c?.sources||[]).find(item => item.id === t.dataset.s);
+      if (!source) return;
+      const title = prompt('Rename this material', source.title || '');
+      if (title && title.trim()){ source.title = title.trim().slice(0,160); save(); render(); }
+      break;
+    }
+    case 'source-up':
+    case 'source-down': {
+      const sources = c?.sources || [];
+      const index = sources.findIndex(item => item.id === t.dataset.s);
+      const offset = a === 'source-up' ? -1 : 1;
+      if (index < 0 || !sources[index+offset]) return;
+      [sources[index], sources[index+offset]] = [sources[index+offset], sources[index]];
+      save(); render(); break;
+    }
+    case 'remove-source': {
+      const source = (c?.sources||[]).find(item => item.id === t.dataset.s);
+      if (!source) return;
+      const count = (source.lessons||[]).length;
+      if (!confirm('Remove “'+source.title+'” and its '+count+' lesson(s) from this course? Existing assignments, answers, mastery, notes and history will remain, but will no longer show this source’s lessons. This cannot be undone.')) return;
+      c.sources = c.sources.filter(item => item.id !== source.id);
+      ev('source_removed', { label:source.title, detail:count+' lessons removed; learning records retained', courseId:c.id });
+      save(); render(); break;
+    }
     case 'open-lesson': {
       const course = c || getCourse(S.course);
       const l = findLesson(course, t.dataset.l);
@@ -1983,6 +2174,29 @@ document.addEventListener('click', async e => {
 });
 
 document.addEventListener('input', e => {
+  if (e.target.id === 'course-search') {
+    S.courseSearch = e.target.value;
+    const query = S.courseSearch.trim().toLowerCase();
+    let visible = 0;
+    document.querySelectorAll('.course-card').forEach(card => {
+      const match = card.dataset.courseName.includes(query);
+      card.hidden = !match;
+      if (match) visible++;
+    });
+    const empty = document.getElementById('course-no-results');
+    if (empty) empty.style.display = visible ? 'none' : '';
+    return;
+  }
+  if (S.wizard && ['w-url','w-text'].includes(e.target.id)) {
+    grabSource();
+    S.wizard.previewReady = false;
+    S.wizard.sourceError = '';
+    S.wizard.importState = '';
+    S.wizard.duplicateTitle = '';
+    document.getElementById('w-preview')?.remove();
+    const build = document.querySelector('[data-act="w-build"]');
+    if (build) build.textContent = 'Preview source';
+  }
   const t = e.target.closest('[data-act]'); if (!t) return;
   if (t.dataset.act === 'anstext'){
     const c = getCourse(t.dataset.c); const asg = c.assignments.find(x => x.id === t.dataset.a);
@@ -1991,26 +2205,76 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', async e => {
   if (e.target.id !== 'w-pdf') return;
+  if (S.busy) return;
   const file = e.target.files && e.target.files[0]; if (!file) return;
+  const w = S.wizard;
   const stat = document.getElementById('w-pdfstat');
+  if (!w || w.srcType !== 'pdf') return;
   if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')){ stat.textContent = 'Choose a PDF file. This file was not read or uploaded.'; e.target.value = ''; return; }
   if (file.size > 15 * 1024 * 1024){ stat.textContent = 'This PDF is larger than the current 15 MB local extraction limit. Split it into smaller documents; no content was uploaded.'; e.target.value = ''; return; }
-  if (!window.pdfjsLib){ stat.textContent = 'The PDF reader could not load. Paste the text instead.'; return; }
+  if (!window.pdfjsLib || !window.AdaptPracticeSourceContext){
+    console.error('PDF reader initialization failed:', { pdfjsLoaded:!!window.pdfjsLib, sourceContextLoaded:!!window.AdaptPracticeSourceContext });
+    stat.textContent = 'The PDF reader did not initialize. Reload the page; if it persists, paste the text instead.';
+    w.sourceError = stat.textContent;
+    return;
+  }
+  const token = uid();
+  w.pdfToken = token;
+  w.fileName = file.name;
+  w.fileFingerprint = [file.name.toLowerCase(), file.size, file.lastModified].join(':');
+  w.previewReady = false;
+  w.sourceError = '';
+  w.importState = 'Extracting PDF text…';
+  S.busy = 'Extracting PDF text…';
+  document.querySelectorAll('#w-url,#w-text,#w-pdf,.source-tabs button,[data-act="w-build"],[data-act="w-back"]').forEach(control => { control.disabled = true; });
   stat.innerHTML = '<span class="spin"></span> Reading ' + esc(file.name) + '…';
+  let loadingTask, doc;
+  const bounded = (promise, onTimeout) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      Promise.resolve(onTimeout && onTimeout()).catch(error => console.warn('PDF extraction cleanup failed:', { code:String(error?.name || error?.code || 'cleanup_error') }));
+      reject(new Error('PDF extraction exceeded 45 seconds.'));
+    }, 45000);
+    Promise.resolve(promise).then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
+  });
   try {
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    const buf = await file.arrayBuffer();
-    const doc = await pdfjsLib.getDocument({ data: buf }).promise;
-    const extracted = await window.AdaptPracticeSourceContext.extractPdfPages(doc, (page, total) => {
+    const buf = await bounded(file.arrayBuffer());
+    if (S.wizard !== w || w.pdfToken !== token || w.srcType !== 'pdf') return;
+    if (window.crypto?.subtle) {
+      const digest = await crypto.subtle.digest('SHA-256', buf);
+      w.fileFingerprint = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+    loadingTask = pdfjsLib.getDocument({ data: buf });
+    doc = await bounded(loadingTask.promise, () => loadingTask.destroy());
+    const extracted = await bounded(window.AdaptPracticeSourceContext.extractPdfPages(doc, (page, total) => {
       stat.innerHTML = '<span class="spin"></span> Reading page ' + page + ' of ' + total + '…';
-    });
-    S.wizard.text = extracted.text;
-    S.wizard.pages = extracted.pages;
-    S.wizard.fileName = file.name;
-    if (!S.wizard.text.replace(/\[page \d+\]/g,'').trim()){ stat.textContent = 'No selectable text was found. This PDF may be scanned; OCR is not configured. Paste text manually instead.'; return; }
-    stat.textContent = file.name + ' · all ' + doc.numPages + ' pages read · ' + S.wizard.text.length.toLocaleString() + ' characters';
+    }), () => doc.destroy());
+    if (S.wizard !== w || w.pdfToken !== token || w.srcType !== 'pdf') return;
+    w.text = extracted.text;
+    w.pages = extracted.pages;
+    w.previewReady = false;
+    w.importState = 'PDF text extracted. Preview it before adding.';
+    if (!w.text.replace(/\[page \d+\]/g,'').trim()){
+      stat.textContent = 'No selectable text was found. This PDF may be scanned; OCR is not configured. Paste text manually instead.';
+      w.sourceError = stat.textContent;
+      w.importState = 'Failed';
+      return;
+    }
+    stat.textContent = file.name + ' · all ' + doc.numPages + ' pages read · ' + w.text.length.toLocaleString() + ' characters';
   } catch(err){
-    stat.textContent = 'That file could not be read. Paste the text below instead.';
+    if (S.wizard !== w || w.pdfToken !== token) return;
+    const code = String(err?.code || err?.name || 'pdf_read_error');
+    console.error('PDF extraction failed:', { code });
+    if (err?.name === 'PasswordException') w.sourceError = 'This PDF is password-protected. Unlock it and select it again, or paste its text.';
+    else if (/timed out|exceeded 45 seconds/i.test(String(err?.message || ''))) w.sourceError = 'PDF extraction took longer than 45 seconds. Try a smaller PDF or paste its text.';
+    else w.sourceError = 'PDF extraction failed ('+code+'). Check that the file is not damaged and try again, or paste its text.';
+    w.importState = 'Failed';
+    if (stat) stat.textContent = w.sourceError;
+  } finally {
+    try { if (doc) await doc.destroy(); }
+    catch (error) { console.warn('PDF document cleanup failed:', { code:String(error?.name || error?.code || 'cleanup_error') }); }
+    S.busy = '';
+    if (S.wizard === w) render();
   }
 });
 
@@ -2018,55 +2282,129 @@ document.addEventListener('change', async e => {
 function grabSource(){
   const w = S.wizard; if (!w) return;
   const u = document.getElementById('w-url'); if (u) w.url = u.value.trim();
-  const ti = document.getElementById('w-titles'); if (ti) w.titles = ti.value;
-  const tx = document.getElementById('w-text'); if (tx && tx.value.trim()) w.text = tx.value;
+  const tx = document.getElementById('w-text'); if (tx) w.text = tx.value;
+}
+function sourceSignature(w){
+  return JSON.stringify([w.srcType, String(w.url||'').trim(), String(w.text||'').trim(), w.fileFingerprint||'']);
+}
+function sourceIdentity(type, source){
+  if (type === 'playlist') return 'playlist:' + (source.listId || ytListId(source.url) || '');
+  if (type === 'video') return 'video:' + (source.videoId || ytVideoId(source.url) || '');
+  if (type === 'pdf') {
+    if (source.fingerprint) return 'pdf:' + source.fingerprint;
+    const title = String(source.fileName || source.title || '').trim().toLowerCase();
+    if (title && title !== 'pasted pdf text') return 'pdf:' + title;
+    return 'pdf:' + String(source.text || '').replace(/\s+/g,' ').trim().toLowerCase();
+  }
+  return 'text:' + String(source.text || '').replace(/\s+/g,' ').trim().toLowerCase();
+}
+function duplicateSource(course, wizard){
+  if (!course) return null;
+  const identity = sourceIdentity(wizard.srcType, {
+    listId:ytListId(wizard.url), videoId:ytVideoId(wizard.url),
+    fingerprint:wizard.fileFingerprint, fileName:wizard.fileName, title:wizard.fileName, url:wizard.url, text:wizard.text
+  });
+  return (course.sources||[]).find(source => identity && sourceIdentity(source.type, source) === identity) || null;
+}
+function validateSourceWizard(w){
+  if (w.srcType === 'playlist') {
+    const normalizedUrl = window.AdaptPracticeYouTubeUrl.normalizePlaylistUrl(w.url);
+    if (!normalizedUrl) throw new Error('Enter a valid YouTube playlist URL. Other websites are not supported.');
+    w.url = normalizedUrl;
+  } else if (w.srcType === 'video') {
+    if (!ytVideoId(w.url)) throw new Error('Enter a valid YouTube video link. Other websites are not supported.');
+  } else if (!String(w.text||'').trim()) {
+    throw new Error(w.srcType === 'pdf' ? 'Select a PDF or paste its text.' : 'Paste some notes or learning material.');
+  }
+}
+async function prepareSourcePreview(w){
+  if (S.busy) return;
+  grabSource();
+  try { validateSourceWizard(w); }
+  catch(error){ w.sourceError = error.message; w.importState = 'Failed'; render(); return; }
+  S.busy = 'Validating source…';
+  w.sourceError = '';
+  w.importState = 'Validating';
+  w.previewReady = false;
+  w.duplicateTitle = '';
+  render();
+  try {
+    if (w.srcType === 'playlist') {
+      w.importState = 'Extracting actual playlist videos…';
+      render();
+      const result = await fetchPlaylistItems(w.url);
+      const items = result.items;
+      const validItems = items.filter(item => /^[A-Za-z0-9_-]{11}$/.test(item.id||'') && item.title && Number.isInteger(Number(item.index)) && item.url);
+      if (!validItems.length) throw new Error('The YouTube API returned no valid video records for this playlist.');
+      w.playlistItems = validItems;
+      w.unavailableCount = result.unavailableCount;
+      const firstIndexById = new Map();
+      w.duplicateItems = [];
+      for (const item of validItems) {
+        if (firstIndexById.has(item.id)) w.duplicateItems.push({ id:item.id, index:item.index, firstIndex:firstIndexById.get(item.id) });
+        else firstIndexById.set(item.id, item.index);
+      }
+      w.listId = ytListId(w.url);
+      w.titles = validItems.map(item => item.title).join('\n');
+    } else if (w.srcType === 'video') {
+      w.videoId = ytVideoId(w.url);
+      w.transcriptSegments = window.AdaptPracticeSourceContext.parseTranscript(w.text);
+      w.transcriptStatus = w.transcriptSegments.length ? 'available' : w.text.trim() ? 'manual_unindexed' : 'missing';
+      w.videoMetadata = null;
+      w.metadataAvailable = false;
+      w.metadataError = '';
+      try {
+        w.videoMetadata = await fetchVideoMetadata(w.url);
+        w.metadataAvailable = true;
+      } catch(error) {
+        w.metadataError = error.message;
+      }
+    }
+    const course = w.addTo ? getCourse(w.addTo) : null;
+    const duplicate = duplicateSource(course, w);
+    if (duplicate) w.duplicateTitle = duplicate.title || 'Existing material';
+    w.previewSignature = sourceSignature(w);
+    w.previewReady = true;
+    w.importState = 'Ready for preview';
+  } catch(error) {
+    w.sourceError = error.message || 'The source could not be prepared. Retry the import.';
+    w.importState = 'Failed';
+  } finally {
+    S.busy = '';
+    render();
+  }
+}
+async function confirmSourceImport(w){
+  if (S.busy) return;
+  S.busy = 'Saving';
+  w.importState = 'Saving';
+  render();
+  try {
+    let out;
+    if (SAMPLE) out = validateCourseMap(await buildCourse(w), w);
+    else if (w.srcType === 'playlist') out = { lessons:w.playlistItems.map(item => ({ title:item.title, concepts:[] })), roadmap:[], gap:'' };
+    else if (w.srcType === 'video') out = { lessons:[{ title:w.videoMetadata?.title || ('Video ' + w.videoId), concepts:[], proposed:!w.text.trim() }], roadmap:[], gap:'' };
+    else if (w.srcType === 'pdf') out = { lessons:[{ title:w.fileName || 'Document', concepts:[], page:w.pages.find(page => page.text.trim())?.page }], roadmap:[], gap:'' };
+    else out = { lessons:[{ title:'Pasted notes', concepts:[] }], roadmap:[], gap:'' };
+    if (!SAMPLE) out = validateCourseMap(out, w);
+    finishCourse(w, out);
+  } catch(error) {
+    w.sourceError = aiErr(error);
+    w.importState = 'Failed';
+    console.warn('Source import failed:', error?.code || 'source_import_failed');
+  } finally {
+    S.busy = '';
+    if (S.wizard === w) render();
+  }
 }
 async function buildFromWizard(){
-  const w = S.wizard; grabSource();
-  if (w.srcType !== 'pdf' && !w.url && !w.titles && !w.text){ toast('Add a link, some titles, or the text.'); return; }
-  if (w.srcType === 'pdf' && !w.text){ toast('Load a PDF or paste its text.'); return; }
-  if (w.srcType === 'playlist' && w.url){
-    const normalizedUrl = window.AdaptPracticeYouTubeUrl.normalizePlaylistUrl(w.url);
-    if (!normalizedUrl){
-      w.sourceError = 'Enter a valid YouTube playlist URL. Other websites are not supported.';
-      render();
-      return;
-    }
-    w.url = normalizedUrl;
-  }
-  if (w.srcType === 'video' && w.url && !ytVideoId(w.url)){
-    w.sourceError = 'Enter a valid YouTube video link. Other websites are not supported.';
-    render();
-    return;
-  }
-
-  if (w.srcType === 'playlist' && w.url && !w.titles) {
-    try {
-      const items = await fetchPlaylistItems(w.url);
-      if (!items.length) throw new Error('No accessible videos were returned for this playlist.');
-      w.playlistItems = items;
-      w.titles = items.map(item => item.title).filter(Boolean).join('\n');
-    } catch (e) {
-      w.sourceError = 'Playlist metadata could not be imported: ' + String(e && e.message || e) + ' Paste the video titles manually; no placeholder lessons were created.';
-      render();
-      return;
-    }
-  }
-
-  if (!SAMPLE){
-    const titles = (w.titles||'').split('\n').map(s=>s.trim()).filter(Boolean);
-    let lessons;
-    if (w.srcType === 'pdf') lessons = [{ title: w.fileName || 'Document', concepts:[], proposed:true }];
-    else if (w.srcType === 'video') lessons = [{ title: w.name + ' — proposed lesson 1', concepts:[], proposed:true }];
-    else if (titles.length) lessons = titles.map(t => ({ title:t, concepts:[] }));
-    else lessons = []; // playlist, no titles — finishCourse turns this into placeholder slots
-    finishCourse(w, { lessons, roadmap:[], gap:'' });
-    return;
-  }
-  await guard(async () => {
-    const out = await buildCourse(w);
-    finishCourse(w, out);
-  }, 'Reading your material…');
+  const w = S.wizard;
+  if (!w || S.busy) return;
+  grabSource();
+  try { validateSourceWizard(w); }
+  catch(error){ w.sourceError = error.message; w.importState = 'Failed'; render(); return; }
+  if (w.previewReady && w.previewSignature === sourceSignature(w)) return confirmSourceImport(w);
+  await prepareSourcePreview(w);
 }
 function finishCourse(w, out){
   let c = w.addTo ? getCourse(w.addTo) : null;
@@ -2076,39 +2414,41 @@ function finishCourse(w, out){
     D.courses.push(c);
     ev('course_created', { label:c.name, courseId:c.id });
   }
-  const titles = (w.titles||'').split('\n').map(s=>s.trim()).filter(Boolean);
   const src = {
     id:uid(),
     type:w.srcType,
-    title: w.srcType==='pdf' ? (w.fileName || 'Uploaded document') : (w.srcType==='video' ? 'Single video' : 'YouTube playlist'),
-    url:w.url, listId: w.srcType==='playlist' ? ytListId(w.url) : null, text:w.text || '', pages:w.pages || [],
-    transcriptStatus:w.srcType==='video' && !w.text ? 'missing' : w.srcType==='video' ? 'manual' : null,
-    playlistItems:w.playlistItems || [], lessons:[]
+    title: w.srcType==='pdf' ? (w.fileName || 'Pasted PDF text') : (w.srcType==='video' ? (w.videoMetadata?.title || ('YouTube video ' + w.videoId)) : w.srcType==='text' ? 'Pasted notes' : 'YouTube playlist'),
+    url:w.url, listId: w.srcType==='playlist' ? (w.listId || ytListId(w.url)) : null,
+    videoId:w.srcType==='video' ? w.videoId : null,
+    fingerprint:w.srcType==='pdf' ? (w.fileFingerprint || '') : '',
+    metadataAvailable:w.srcType==='video' ? !!w.metadataAvailable : null,
+    text:w.text || '', pages:w.pages || [],
+    transcriptStatus:w.srcType==='video' ? (w.transcriptStatus || 'missing') : null,
+    playlistItems:w.srcType==='playlist' ? (w.playlistItems || []) : [],
+    unavailableCount:w.srcType==='playlist' ? (w.unavailableCount || 0) : 0,
+    duplicateItems:w.srcType==='playlist' ? (w.duplicateItems || []) : [], lessons:[]
   };
   if (src.type === 'video'){
-    src.transcriptSegments = window.AdaptPracticeSourceContext.parseTranscript(src.text);
+    src.transcriptSegments = w.transcriptSegments || window.AdaptPracticeSourceContext.parseTranscript(src.text);
     src.transcriptStatus = src.transcriptSegments.length ? 'available' : src.text ? 'manual_unindexed' : 'missing';
   }
   let lessons;
-  if (w.srcType === 'playlist' && titles.length){
-    // Ground truth: the pasted list, exactly, in order, one lesson per
-    // title, no matter how many there are. Claude's job here was only to
-    // suggest concepts per title (conceptsByLesson) — used only when it
-    // lines up position-for-position with what was actually pasted.
-    const enrich = Array.isArray(out.conceptsByLesson) && out.conceptsByLesson.length === titles.length ? out.conceptsByLesson : null;
-    lessons = titles.map((t, i) => ({ title:t, concepts: enrich ? (enrich[i]||[]) : [] }));
+  if (w.srcType === 'playlist' && src.playlistItems.length){
+    const enrich = Array.isArray(out.conceptsByLesson) && out.conceptsByLesson.length === src.playlistItems.length ? out.conceptsByLesson : null;
+    lessons = src.playlistItems.map((item, i) => ({
+      title:item.title, concepts:enrich ? (enrich[i]||[]) : [],
+      index:item.index, videoId:item.id, url:item.url
+    }));
   } else if (out.lessons && out.lessons.length){
     lessons = out.lessons;
-  } else if (titles.length){
-    lessons = titles.map(t => ({ title:t, concepts:[] }));
   } else {
     lessons = [];
   }
-  if (!lessons.length && w.srcType === 'playlist') src.status = 'missing_metadata';
+  if (!lessons.length && w.srcType === 'playlist') throw new Error('The playlist has no valid video records. Nothing was added.');
   lessons.forEach((l, i) => {
-    const lesson = { id:uid(), title:l.title || ('Lesson ' + (i+1)), concepts:(l.concepts||[]).slice(0,6), done:false, proposed:!!l.proposed || (w.srcType==='video' && !w.text), auto:!!l.auto };
-    if (w.srcType === 'video') lesson.url = w.url;
-    if (w.srcType === 'playlist') lesson.index = i + 1;
+    const lesson = { id:uid(), title:l.title || ('Lesson ' + (i+1)), concepts:(l.concepts||[]).slice(0,6), done:false, proposed:!!l.proposed || (w.srcType==='video' && !w.text.trim()), auto:!!l.auto };
+    if (w.srcType === 'video') { lesson.url = w.url; lesson.videoId = w.videoId; }
+    if (w.srcType === 'playlist') { lesson.index = l.index; lesson.videoId = l.videoId; lesson.url = l.url; }
     const pageNumber = Number(l.page);
     const page = Number.isInteger(pageNumber) ? (w.pages || []).find(segment => segment.page === pageNumber && segment.text.trim()) : null;
     if (page) lesson.page = page.page;
@@ -2117,15 +2457,18 @@ function finishCourse(w, out){
       lesson.text = page ? page.text : '';
       lesson.sourcePages = page ? [page.page] : [];
     }
+    if (w.srcType === 'text') lesson.text = w.text;
     lesson.concepts.forEach(k => { const cc = conceptOf(c, k); if (!cc.source) cc.source = { lessonId:lesson.id, title:lesson.title, page:lesson.page || null }; });
     src.lessons.push(lesson);
   });
   c.sources.push(src);
   if (out.roadmap && out.roadmap.length && !(c.roadmap||[]).length){ c.roadmap = out.roadmap; c.gap = out.gap || ''; }
+  ev('source_added', { label:src.title, detail:src.lessons.length+' lessons added', courseId:c.id, sourceId:src.id });
   save();
   S.wizard = null;
+  S.courseTab = 'overview';
   go('course', { course:c.id });
-  toast(src.dynamic ? 'Playlist ready — open lesson 1 and titles will fill in as you watch.' : src.lessons.length + ' lessons ready. Open one and the practice panel fills itself.');
+  toast('Completed: '+src.title+' added with '+src.lessons.length+' lesson'+(src.lessons.length===1?'':'s')+'.');
 }
 function newAssignment(c, out, opts){
   opts = opts || {};
@@ -2156,7 +2499,7 @@ async function submitAssignment(c, a){
   const unanswered = a.questions.filter((q,i) => a.answers[i] === undefined || a.answers[i] === '').length;
   if (unanswered && !confirm(unanswered + ' question' + (unanswered>1?'s are':' is') + ' unanswered. Submit anyway? Blanks are marked wrong.')) return;
   await guard(async () => {
-    const out = await gradeAssignment(c, a);
+    const out = validateGradeResponse(await gradeAssignment(c, a), a.questions.length);
     const byI = {};
     (out.results||[]).forEach(r => { byI[r.i] = r; });
     a.results = a.questions.map((q,i) => byI[i] || { verdict: localVerdict(q, a.answers[i]) || 'incorrect', feedback:q.explanation||'', confidence:'low' });
