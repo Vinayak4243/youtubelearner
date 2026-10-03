@@ -2068,6 +2068,7 @@ setInterval(() => { if (S.session && S.view === 'shield'){ if (S.session.until <
 
 /* ---------- lesson position memory ---------- */
 setInterval(() => {
+
   if (S.view === 'lesson' && ytTime > 0){
     const c = getCourse(S.course);
     if (c && c.resume && c.resume.lessonId === S.lesson){ c.resume.at = Math.round(ytTime); c.resume.t = now(); save(); }
