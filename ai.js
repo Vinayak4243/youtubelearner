@@ -170,7 +170,7 @@ async function askText(prompt, maxTokens = 1200, customKey = null) {
   const openaiKey = customKey || process.env.OPENAI_API_KEY;
   if (openaiKey) {
     try {
-      const client = new OpenAI({ apiKey: openaiKey });
+      const client = new OpenAI({ apiKey: openaiKey, timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 });
       const res = await client.chat.completions.create({
         model: GPT_MODEL,
         messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: prompt }],
@@ -272,13 +272,13 @@ async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600, si
   const openaiKey = customKey || process.env.OPENAI_API_KEY;
   if (openaiKey) {
     try {
-      const client = new OpenAI({ apiKey: openaiKey });
+      const client = new OpenAI({ apiKey: openaiKey, timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 });
       const stream = await client.chat.completions.create({
         model: GPT_MODEL,
         messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: prompt }],
         max_tokens: maxTokens,
         stream: true,
-      });
+      }, requestSignal ? { signal: requestSignal } : undefined);
       (async () => {
         try {
           for await (const chunk of stream) {

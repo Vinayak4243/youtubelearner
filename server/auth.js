@@ -69,6 +69,7 @@ async function authenticateRequest(req, res, next) {
       req.user = data.user;
     }
     req.userSupabase = client;
+    req.authToken = token;
     next();
   } catch (error) {
     console.error('Authentication provider unavailable:', error.status || error.code || 'request_failed');

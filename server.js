@@ -12,6 +12,7 @@ const fs = require('fs');
 const { execFile } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
 const { authenticateRequest, hasSupabaseConfig, getSupabaseConfig, sessionCookies, cookieValues, createUserClient } = require('./server/auth');
+const { normalizePlaylistUrl: normalizeYouTubePlaylistUrl } = require('./public/youtube-url');
 
 const { askText, askJSON, streamText, MODEL, getHealth, checkProviderStatus } = require('./ai');
 
@@ -401,6 +402,13 @@ app.post('/api/auth/reset/exchange', asyncRoute(async (req, res) => {
 app.post('/api/auth/reset-password', authenticateRequest, asyncRoute(async (req, res) => {
   const password = String(req.body?.password || '');
   if (password.length < 10 || password.length > 128) return bad(res, 400, 'Use a password between 10 and 128 characters.', 'invalid_password');
+  const refreshToken = cookieValues(req).ap_refresh;
+  if (!refreshToken) return bad(res, 401, 'Your password reset session has expired. Request a new reset link.', 'session_expired');
+  const { data: sessionData, error: sessionError } = await req.userSupabase.auth.setSession({
+    access_token: req.authToken,
+    refresh_token: refreshToken
+  });
+  if (sessionError || !sessionData.session) return bad(res, 401, 'Your password reset session has expired. Request a new reset link.', 'session_expired');
   const { error } = await req.userSupabase.auth.updateUser({ password });
   if (error) return bad(res, 400, 'Could not update the password. Request a new reset link.', 'password_reset_failed');
   res.json({ ok: true });
@@ -439,8 +447,8 @@ app.delete('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, 
 }));
 
 app.get(['/api/playlist', '/playlist'], authenticateRequest, asyncRoute(async (req, res) => {
-  const url = sanitizeUrl(req.query.url);
-  if (!url) return bad(res, 400, 'A YouTube playlist URL is required.');
+  const url = normalizeYouTubePlaylistUrl(req.query.url);
+  if (!url) return bad(res, 400, 'Enter a valid YouTube playlist URL with a playlist ID.', 'invalid_youtube_url');
   const items = await getPlaylistItems(url);
   res.json({ ok: true, items });
 }));
@@ -473,7 +481,12 @@ app.post(['/api/ai/stream', '/ai/stream'], authenticateRequest, persistentUserAi
     done = true;
     try { res.write(line); res.end(); } catch (e) {}
   };
-  req.on('close', () => { done = true; });
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      done = true;
+      controller.abort();
+    }
+  });
 
   try {
     streamText(prompt, {

@@ -10,7 +10,13 @@ process.env.SUPABASE_URL = 'https://supabase.test';
 process.env.SUPABASE_ANON_KEY = 'test-anon-key';
 const nativeFetch = global.fetch;
 let providerStatus = { status: 200, body: '{}' };
+let providerStreamBody = 'data: {"candidates":[{"content":{"parts":[{"text":"streamed answer"}]}}]}\n\n';
 let lastSnapshotWrite = null;
+const testAccessToken = [
+  Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url'),
+  Buffer.from(JSON.stringify({ sub:'user-1', exp:Math.floor(Date.now() / 1000) + 3600 })).toString('base64url'),
+  ''
+].join('.');
 let signupResponse = {
   status:200,
   body:{
@@ -32,8 +38,29 @@ global.fetch = async (input, init) => {
       assert.equal(new Headers(init.headers).get('apikey'), process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY);
       return new Response(JSON.stringify(signupResponse.body), { status:signupResponse.status, headers:{'content-type':'application/json'} });
     }
+    if (url.pathname.endsWith('/auth/v1/token')) {
+      return new Response(JSON.stringify({
+        access_token:testAccessToken,
+        refresh_token:'test-refresh-token',
+        expires_in:3600,
+        token_type:'bearer',
+        user:{ id:'user-1', email:'learner@example.test' }
+      }), { status:200, headers:{'content-type':'application/json'} });
+    }
+    if (url.pathname.endsWith('/auth/v1/recover') || url.pathname.endsWith('/auth/v1/logout')) {
+      return new Response('{}', { status:200, headers:{'content-type':'application/json'} });
+    }
     if (url.pathname.endsWith('/rest/v1/rpc/consume_user_ai_rate_limit')) return new Response('true', { status:200, headers:{'content-type':'application/json'} });
     if (url.pathname.endsWith('/auth/v1/user')) {
+      if (init.method && init.method !== 'GET') {
+        return new Response(JSON.stringify({ id:'user-1', email:'learner@example.test' }), { status:200, headers:{'content-type':'application/json'} });
+      }
+      if (new Headers(init.headers).get('authorization') === `Bearer ${testAccessToken}`) {
+        return new Response(JSON.stringify({ id:'user-1', email:'learner@example.test' }), { status:200 });
+      }
+      if (new Headers(init.headers).get('authorization') === 'Bearer test-token') {
+        return new Response(JSON.stringify({ id: 'user-1', email: 'learner@example.test' }), { status: 200 });
+      }
       if (new Headers(init.headers).get('authorization') !== 'Bearer valid-user-token') {
         return new Response(JSON.stringify({ message: 'invalid token' }), { status: 401 });
       }
@@ -56,6 +83,9 @@ global.fetch = async (input, init) => {
   assert.equal(payload.contents[0].parts[0].text.includes('test prompt'), true);
   assert.equal(new URL(url).searchParams.has('key'), false);
   assert.equal(new Headers(init.headers).get('x-goog-api-key'), 'test-server-key');
+  if (url.pathname.endsWith(':streamGenerateContent')) {
+    return new Response(providerStreamBody, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }
   return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: '{"ok":true}' }] } }] }), { status: 200 });
 };
 
@@ -102,6 +132,28 @@ test('AI provider credentials come only from the server environment', async () =
   });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
+});
+
+test('AI streaming returns provider deltas before the response completes', async () => {
+  const response = await fetch(`${baseUrl}/api/ai/stream`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer test-token' },
+    body: JSON.stringify({ prompt: 'test prompt' })
+  });
+  const body = await response.text();
+  assert.equal(response.status, 200);
+  assert.match(body, /"delta":"streamed answer"/);
+  assert.match(body, /data: \[DONE\]/);
+});
+
+test('playlist API rejects non-YouTube URLs before fetching metadata', async () => {
+  const url = encodeURIComponent('https://example.com/playlist?list=PL1234567890');
+  const response = await fetch(`${baseUrl}/api/playlist?url=${url}`, {
+    headers: { authorization: 'Bearer test-token' }
+  });
+  const body = await response.json();
+  assert.equal(response.status, 400);
+  assert.equal(body.code, 'invalid_youtube_url');
 });
 
 test('Vercel has explicit function entry points for nested AI endpoints', () => {
@@ -183,6 +235,39 @@ test('signup with confirmation required returns success without creating a sessi
     if (originalPublishableKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = originalPublishableKey;
   }
+});
+
+test('mocked authentication supports sign-in, sign-out, recovery email and password update', async () => {
+  const login = await fetch(`${baseUrl}/api/auth/login`, {
+    method:'POST',
+    headers:{ 'content-type':'application/json' },
+    body:JSON.stringify({ email:'learner@example.test', password:'valid-test-password' })
+  });
+  assert.equal(login.status, 200);
+  assert.equal((await login.json()).user.id, 'user-1');
+  assert.match(login.headers.get('set-cookie') || '', /ap_access=.*HttpOnly/);
+
+  const recovery = await fetch(`${baseUrl}/api/auth/forgot-password`, {
+    method:'POST',
+    headers:{ 'content-type':'application/json' },
+    body:JSON.stringify({ email:'learner@example.test' })
+  });
+  assert.equal(recovery.status, 200);
+
+  const passwordUpdate = await fetch(`${baseUrl}/api/auth/reset-password`, {
+    method:'POST',
+    headers:{ 'content-type':'application/json', authorization:`Bearer ${testAccessToken}`, cookie:`ap_access=${testAccessToken}; ap_refresh=test-refresh-token` },
+    body:JSON.stringify({ password:'updated-test-password' })
+  });
+  assert.equal(passwordUpdate.status, 200, await passwordUpdate.clone().text());
+
+  const logout = await fetch(`${baseUrl}/api/auth/logout`, {
+    method:'POST',
+    headers:{ 'content-type':'application/json', authorization:`Bearer ${testAccessToken}`, cookie:`ap_access=${testAccessToken}; ap_refresh=test-refresh-token` },
+    body:'{}'
+  });
+  assert.equal(logout.status, 200);
+  assert.match(logout.headers.get('set-cookie') || '', /Max-Age=0/);
 });
 
 test('signup database failures return a sanitized error and log only safe diagnostics', async () => {
