@@ -102,10 +102,12 @@ enabled before testing account data sync.
   `SUPABASE_PUBLISHABLE_KEY`.
 - At least one AI provider is required: `GEMINI_API_KEY` (default) or
   `OPENAI_API_KEY`. Optional model settings are `GEMINI_MODEL`,
-  `GEMINI_FALLBACK_MODEL`, and `GPT_MODEL`. With no Gemini model explicitly
-  configured, the server selects from models advertised by the Gemini API that
-  support content generation. Configured names are checked against that live
-  model list; do not copy an unverified model name from an example.
+  `GEMINI_FALLBACK_MODEL`, and `GPT_MODEL`. Gemini model selection uses the
+  provider's current model list and verifies content-generation availability.
+  `GEMINI_MODEL` and `GEMINI_FALLBACK_MODEL` are preferences, not hard
+  requirements: if either is no longer available, the server tries other
+  advertised generation-capable models. Check `/api/health` after deployment
+  to confirm the provider and selected model.
 - Required for automated YouTube playlist/video metadata: `YOUTUBE_API_KEY`.
   The key is read only by the server; Vercel does not use a local `yt-dlp`
   executable.

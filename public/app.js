@@ -441,7 +441,7 @@ const AI_COPY = {
   rate_limited:'Too many AI requests. Wait a minute and try again.',
   credits_exhausted:'Your Gemini API quota or credit is exhausted. Check Google AI Studio billing and quota, then retry.',
   invalid_api_key:'Gemini rejected the server credential. Replace GEMINI_API_KEY with a Google AI Studio API key, then redeploy.',
-  invalid_model:'The configured AI model is unavailable. Check the model name against the provider’s available models.',
+  invalid_model:'No configured AI model passed the provider availability check. Check the server model setting and API-key access, then retry.',
   provider_overloaded:'The AI provider is temporarily overloaded. Please retry in a moment.',
   provider_unavailable:'The AI provider is unavailable. Check its status and retry.',
   session_expired:'Sign in to your AI provider again, then retry.',

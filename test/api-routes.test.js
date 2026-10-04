@@ -5,7 +5,7 @@ const path = require('node:path');
 const { getSupabaseConfig, sessionCookies } = require('../server/auth');
 
 process.env.GEMINI_API_KEY = 'test-server-key';
-process.env.GEMINI_MODEL = 'test-model';
+process.env.GEMINI_MODEL = 'retired-configured-model';
 process.env.YOUTUBE_API_KEY = 'test-youtube-key';
 process.env.OPENAI_API_KEY = '';
 process.env.SUPABASE_URL = 'https://supabase.test';
@@ -22,6 +22,10 @@ let signupRedirectTo = '';
 let recoveryRedirectTo = '';
 let generatedResponseMimeTypes = [];
 let generationFailure = null;
+const modelProbeFailures = new Set();
+const unavailableGenerationModels = new Set();
+const generatedModelIds = [];
+const streamedModelIds = [];
 const testAccessToken = [
   Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url'),
   Buffer.from(JSON.stringify({ sub:'user-1', exp:Math.floor(Date.now() / 1000) + 3600 })).toString('base64url'),
@@ -133,14 +137,27 @@ global.fetch = async (input, init) => {
     return new Response(JSON.stringify({
       models:[
         { name:'models/test-model', supportedGenerationMethods:['generateContent'] },
+        { name:'models/backup-model', supportedGenerationMethods:['generateContent'] },
         { name:'models/not-a-generator', supportedGenerationMethods:['embedContent'] }
       ]
     }), { status:200, headers:{ 'content-type':'application/json' } });
   }
   if (url.pathname.endsWith(':countTokens')) {
+    const model = url.pathname.match(/\/models\/([^/:]+):countTokens$/)?.[1];
+    if (modelProbeFailures.has(model)) {
+      return new Response(JSON.stringify({ error:{ message:`Model ${model} is not found.` } }), { status:404, headers:{'content-type':'application/json'} });
+    }
     return new Response(providerStatus.body, { status: providerStatus.status });
   }
   const payload = JSON.parse(init.body);
+  const generationModel = url.pathname.match(/\/models\/([^/:]+):generateContent$/)?.[1];
+  const streamingModel = url.pathname.match(/\/models\/([^/:]+):streamGenerateContent$/)?.[1];
+  if (generationModel) generatedModelIds.push(generationModel);
+  if (streamingModel) streamedModelIds.push(streamingModel);
+  const requestedModel = generationModel || streamingModel;
+  if (unavailableGenerationModels.has(requestedModel)) {
+    return new Response(JSON.stringify({ error:{ message:`Model ${requestedModel} is not found.` } }), { status:404, headers:{'content-type':'application/json'} });
+  }
   generatedResponseMimeTypes.push(payload.generationConfig?.responseMimeType || null);
   assert.equal(payload.contents[0].parts[0].text.includes('test prompt'), true);
   assert.equal(new URL(url).searchParams.has('key'), false);
@@ -188,6 +205,20 @@ test('provider credential failures do not make the API service unavailable', asy
   assert.equal(body.service, 'available');
   assert.equal(body.ready, false);
   assert.equal(body.code, 'invalid_api_key');
+});
+
+test('health skips unavailable configured Gemini models and selects an advertised working model', async () => {
+  modelProbeFailures.add('test-model');
+  try {
+    const response = await fetch(`${baseUrl}/api/health`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.ready, true);
+    assert.equal(body.provider, 'gemini');
+    assert.equal(body.model, 'backup-model');
+  } finally {
+    modelProbeFailures.delete('test-model');
+  }
 });
 
 test('missing access cookie refreshes the Supabase session from the refresh cookie', async () => {
@@ -263,6 +294,23 @@ test('AI provider credentials come only from the server environment', async () =
   assert.equal(generatedResponseMimeTypes[1], null);
 });
 
+test('AI generation falls back to an advertised Gemini model when configured model is retired', async () => {
+  generatedModelIds.length = 0;
+  unavailableGenerationModels.add('test-model');
+  try {
+    const response = await fetch(`${baseUrl}/api/ai/text`, {
+      method:'POST',
+      headers:{ 'content-type':'application/json', authorization:'Bearer '+testAccessToken },
+      body:JSON.stringify({ prompt:'test prompt' })
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual(await response.json(), { text:'{"ok":true}' });
+    assert.deepEqual(generatedModelIds, ['test-model','backup-model']);
+  } finally {
+    unavailableGenerationModels.delete('test-model');
+  }
+});
+
 test('Gemini quota failures identify the provider and return a quota response', async () => {
   generationFailure = { status:429, body:{ error:{ message:'Quota exceeded for this model.' } } };
   try {
@@ -307,6 +355,25 @@ test('AI streaming returns provider deltas before the response completes', async
   assert.equal(response.status, 200);
   assert.match(body, /"delta":"streamed answer"/);
   assert.match(body, /data: \[DONE\]/);
+});
+
+test('AI streaming falls back to another advertised model when the preferred model is retired', async () => {
+  streamedModelIds.length = 0;
+  unavailableGenerationModels.add('test-model');
+  try {
+    const response = await fetch(`${baseUrl}/api/ai/stream`, {
+      method:'POST',
+      headers:{ 'content-type':'application/json', authorization:'Bearer '+testAccessToken },
+      body:JSON.stringify({ prompt:'test prompt' })
+    });
+    const body = await response.text();
+    assert.equal(response.status, 200);
+    assert.deepEqual(streamedModelIds, ['test-model','backup-model']);
+    assert.match(body, /"delta":"streamed answer"/);
+    assert.match(body, /data: \[DONE\]/);
+  } finally {
+    unavailableGenerationModels.delete('test-model');
+  }
 });
 
 test('playlist API rejects non-YouTube URLs before fetching metadata', async () => {

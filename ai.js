@@ -103,11 +103,23 @@ async function listGeminiModels(key) {
 }
 
 function modelId(model) {
-  return String(model.name || '').replace(/^models\//, '');
+  return String(model.name || model || '').replace(/^models\//, '');
 }
 
 function defaultGeminiModel(models) {
   return modelId(models.find(model => !/-(preview|experimental)(-|$)/i.test(modelId(model))) || models[0] || {});
+}
+
+function geminiModelCandidates(models, preferredModels = []) {
+  const available = new Set(models.map(modelId).filter(Boolean));
+  const stable = models.filter(model => !/-(preview|experimental)(-|$)/i.test(modelId(model)));
+  const preview = models.filter(model => !stable.includes(model));
+  return [...new Set([
+    ...preferredModels.map(modelId),
+    defaultGeminiModel(stable.length ? stable : models),
+    ...stable.map(modelId),
+    ...preview.map(modelId)
+  ].filter(model => available.has(model)))];
 }
 
 async function verifyGeminiModel(model, key, availableModels) {
@@ -133,7 +145,7 @@ async function checkProviderStatus() {
   if (process.env.GEMINI_API_KEY) {
     try {
       const availableModels = await listGeminiModels(process.env.GEMINI_API_KEY);
-      const modelsToCheck = [...new Set([GEMINI_MODEL || defaultGeminiModel(availableModels), GEMINI_FALLBACK_MODEL].filter(Boolean))];
+      const modelsToCheck = geminiModelCandidates(availableModels, [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]);
       for (const model of modelsToCheck) {
         try {
           await verifyGeminiModel(model, process.env.GEMINI_API_KEY, availableModels);
@@ -199,13 +211,21 @@ async function requestGemini(prompt, maxTokens, key, model, structured = false) 
 async function askGemini(prompt, maxTokens = 2000, key, model = GEMINI_MODEL, structured = false) {
   const finalKey = key || process.env.GEMINI_API_KEY;
   if (!finalKey) throw Object.assign(new Error('GEMINI_API_KEY is missing.'), { code:'missing_api_key', provider:'gemini' });
-  let selectedModel = model;
-  if (!selectedModel) {
-    const availableModels = await listGeminiModels(finalKey);
-    selectedModel = defaultGeminiModel(availableModels);
-    if (!selectedModel) throw Object.assign(new Error('Gemini returned no content-generation models.'), { code:'invalid_model', provider:'gemini' });
+  const availableModels = await listGeminiModels(finalKey);
+  const candidates = geminiModelCandidates(availableModels, [model, GEMINI_FALLBACK_MODEL]);
+  if (!candidates.length) {
+    throw Object.assign(new Error('Gemini returned no models that support content generation.'), { code:'invalid_model', provider:'gemini' });
   }
-  return requestGemini(prompt, maxTokens, finalKey, selectedModel, structured);
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      return await requestGemini(prompt, maxTokens, finalKey, candidate, structured);
+    } catch (error) {
+      lastError = error;
+      if (!['invalid_model', 'provider_overloaded'].includes(error.code)) throw error;
+    }
+  }
+  throw lastError;
 }
 
 async function generateText(prompt, maxTokens, customKey, structured) {
@@ -290,18 +310,19 @@ async function askJSON(prompt, maxTokens = 3000, customKey = null) {
 /**
  * Streaming support
  */
-async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600, signal: requestSignal }, customKey = null, model = GEMINI_MODEL) {
+async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600, signal: requestSignal }, customKey = null, model = GEMINI_MODEL, excludedModels = []) {
   const geminiKey = customKey && customKey.startsWith('AIza') ? customKey : process.env.GEMINI_API_KEY;
   
   if (geminiKey) {
     let emittedAny = false;
+    let selectedModel = '';
+    let candidates = [];
     try {
-      let selectedModel = model;
-      if (!selectedModel) {
-        const availableModels = await listGeminiModels(geminiKey);
-        selectedModel = defaultGeminiModel(availableModels);
-        if (!selectedModel) throw Object.assign(new Error('Gemini returned no content-generation models.'), { code:'invalid_model', provider:'gemini' });
-      }
+      const availableModels = await listGeminiModels(geminiKey);
+      candidates = geminiModelCandidates(availableModels, [model, GEMINI_FALLBACK_MODEL])
+        .filter(candidate => !excludedModels.includes(candidate));
+      selectedModel = candidates[0] || '';
+      if (!selectedModel) throw Object.assign(new Error('Gemini returned no models that support content generation.'), { code:'invalid_model', provider:'gemini' });
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:streamGenerateContent?alt=sse`;
       const res = await fetch(url, {
         method: 'POST',
@@ -348,8 +369,15 @@ async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600, si
       onEnd && onEnd();
     } catch (error) {
       error.provider = 'gemini';
-      if (GEMINI_FALLBACK_MODEL && ['provider_overloaded', 'invalid_model'].includes(error.code) && GEMINI_FALLBACK_MODEL !== model) {
-        return streamText(prompt, { onDelta, onEnd, onError, maxTokens, signal: requestSignal }, geminiKey, GEMINI_FALLBACK_MODEL);
+      const nextModel = candidates.find(candidate => candidate !== selectedModel);
+      if (!emittedAny && nextModel && ['provider_overloaded', 'invalid_model'].includes(error.code)) {
+        return streamText(
+          prompt,
+          { onDelta, onEnd, onError, maxTokens, signal: requestSignal },
+          geminiKey,
+          nextModel,
+          [...excludedModels, selectedModel]
+        );
       }
       const openaiKey = process.env.OPENAI_API_KEY;
       if (!emittedAny && openaiKey && OpenAI) {

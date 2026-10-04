@@ -150,7 +150,7 @@ function aiFailure(err) {
     return { status: 401, code: 'invalid_api_key', message: `${provider} rejected its configured credential. Check the provider API key in the server environment.` };
   }
   if (err && err.code === 'invalid_model') {
-    return { status: 400, code: 'invalid_model', message: `The configured ${provider} model is unavailable. Check the configured model name against that provider's available models.` };
+    return { status: 400, code: 'invalid_model', message: `No available ${provider} model passed the provider check. Verify the server model setting and API-key access.` };
   }
   if (err && err.code === 'credits_exhausted' || /quota|credit balance|purchase credits|plans?\s*&?\s*billing/i.test(message)) {
     return { status: 402, code: 'credits_exhausted', message: `${provider} quota or credits are exhausted. Check the provider's billing and quota settings.` };
