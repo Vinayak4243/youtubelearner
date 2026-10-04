@@ -3,12 +3,25 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.AdaptPracticeLearningValidation = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const QUESTION_TYPES = new Set(['mcq', 'multi', 'tf', 'short', 'numeric', 'code']);
+  const QUESTION_TYPE_ALIASES = {
+    multi_select:'multi',
+    true_false:'tf',
+    fill_blank:'short',
+    numerical:'numeric',
+    coding:'code'
+  };
+  const QUESTION_TYPES = new Set([
+    'mcq', 'multi', 'tf', 'short', 'long', 'numeric', 'case_based',
+    'assertion_reason', 'dry_run', 'debugging', 'code', 'scenario', 'interview'
+  ]);
+  const GROUNDING = new Set(['source_derived', 'external', 'ai_generated']);
+  const BLOOM = new Set(['recall', 'understand', 'apply', 'analyze', 'transfer']);
   const VERDICTS = new Set(['correct', 'partial', 'incorrect']);
   const CONFIDENCE = new Set(['low', 'medium', 'high']);
   const ERROR_TYPES = new Set([
-    'conceptual', 'application', 'calculation', 'logical reasoning', 'recall',
-    'misreading', 'syntax', 'implementation', 'edge case', 'careless', 'incomplete', 'other'
+    'conceptual', 'application', 'calculation', 'logical', 'logical reasoning', 'recall',
+    'misreading', 'syntax', 'implementation', 'edge_case', 'edge case', 'careless',
+    'partial_understanding', 'incomplete', 'other'
   ]);
 
   function invalidResponse() {
@@ -25,6 +38,51 @@
     return index;
   }
 
+  function normalizeType(value) {
+    const raw = String(value || '').toLowerCase().trim();
+    return QUESTION_TYPE_ALIASES[raw] || raw;
+  }
+
+  function normalizeDifficulty(value) {
+    if (Number.isInteger(value) && value >= 1 && value <= 5) return value;
+    const text = String(value || '').toLowerCase().trim();
+    if (/^[1-5]$/.test(text)) return Number(text);
+    if (['easy', 'medium', 'hard'].includes(text)) return text;
+    return 'medium';
+  }
+
+  function normalizeHints(question) {
+    const hints = Array.isArray(question.hints) ? question.hints : question.hint !== undefined ? [question.hint] : [];
+    if (hints.some(hint => typeof hint !== 'string' || !hint.trim())) throw invalidResponse();
+    return hints.map(hint => hint.trim()).slice(0, 3);
+  }
+
+  function normalizeErrorTag(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const raw = String(value).toLowerCase().trim();
+    const normalized = raw.replace(/\s+/g, '_');
+    if (ERROR_TYPES.has(normalized)) return normalized;
+    if (ERROR_TYPES.has(raw)) return raw;
+    throw invalidResponse();
+  }
+
+  function referenceFromQuestion(question) {
+    if (question.sourceRef !== undefined) return question.sourceRef;
+    const source = question.source;
+    if (!source || typeof source !== 'object') return undefined;
+    if (source.page !== undefined) return { type:'pdf', page:source.page };
+    if (source.video_id || source.timestamp !== undefined || source.start !== undefined) {
+      const raw = source.timestamp ?? source.start;
+      if (typeof raw === 'string' && /^\d{1,2}:\d{2}(?::\d{2})?$/.test(raw)) {
+        const parts = raw.split(':').map(Number);
+        const timestamp = parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts[0] * 60 + parts[1];
+        return { type:'video', timestamp };
+      }
+      return { type:'video', timestamp:raw };
+    }
+    return undefined;
+  }
+
   function normalizeQuestions(output, fallbackConcept, sourceContext) {
     if (!output || !Array.isArray(output.questions) || !output.questions.length || output.questions.length > 30) {
       throw invalidResponse();
@@ -34,16 +92,27 @@
         || typeof question.explanation !== 'string' || !question.explanation.trim()
         || typeof question.why !== 'string' || !question.why.trim()) throw invalidResponse();
 
-      const type = String(question.type || '').toLowerCase();
+      const type = normalizeType(question.type);
       if (!QUESTION_TYPES.has(type)) throw invalidResponse();
+      const hints = normalizeHints(question);
+      const grounding = question.grounding === undefined || question.grounding === null
+        ? (sourceContext ? 'source_derived' : 'ai_generated')
+        : String(question.grounding).trim();
+      if (!GROUNDING.has(grounding)) throw invalidResponse();
       const normalized = {
         ...question,
         type,
+        id: typeof question.id === 'string' && question.id.trim() ? question.id.trim() : undefined,
         text: question.text.trim(),
         concept: typeof question.concept === 'string' && question.concept.trim()
           ? question.concept.trim()
           : String(fallbackConcept || 'General'),
-        difficulty: ['easy', 'medium', 'hard'].includes(question.difficulty) ? question.difficulty : 'medium'
+        difficulty: normalizeDifficulty(question.difficulty),
+        bloom: BLOOM.has(String(question.bloom || '').toLowerCase()) ? String(question.bloom).toLowerCase() : undefined,
+        marks: Number.isFinite(Number(question.marks)) ? Number(question.marks) : undefined,
+        grounding,
+        hints,
+        hint: hints[0] || (typeof question.hint === 'string' ? question.hint.trim() : undefined)
       };
       if (question.tolerance !== undefined) {
         const tolerance = Number(question.tolerance);
@@ -77,8 +146,15 @@
         if (question.answer === undefined || question.answer === null || !String(question.answer).trim()) throw invalidResponse();
         if (type === 'numeric' && !Number.isFinite(Number(question.answer))) throw invalidResponse();
       }
-      if (question.hint !== undefined && typeof question.hint !== 'string') throw invalidResponse();
-      const reference = question.sourceRef;
+      if (question.distractor_rationale !== undefined && (typeof question.distractor_rationale !== 'object' || Array.isArray(question.distractor_rationale))) throw invalidResponse();
+      if (question.error_tags_if_wrong !== undefined) {
+        if (typeof question.error_tags_if_wrong !== 'object' || Array.isArray(question.error_tags_if_wrong)) throw invalidResponse();
+        normalized.error_tags_if_wrong = {};
+        for (const [key, value] of Object.entries(question.error_tags_if_wrong)) {
+          normalized.error_tags_if_wrong[key] = normalizeErrorTag(value);
+        }
+      }
+      const reference = referenceFromQuestion(question);
       if (sourceContext?.type === 'pdf') {
         const page = Number(reference?.page);
         const sourcePage = sourceContext.pages.find(item => item.page === page && item.text.trim());
@@ -93,8 +169,39 @@
         if (reference !== undefined && reference !== null) throw invalidResponse();
         normalized.sourceRef = null;
       }
+      if (normalized.sourceRef === null && normalized.grounding === 'source_derived') normalized.grounding = 'ai_generated';
       return normalized;
     });
+  }
+
+  function normalizeSummary(output) {
+    if (!output || typeof output !== 'object' || Array.isArray(output)) throw invalidResponse();
+    const topics = Array.isArray(output.topics) ? output.topics.map(topic => {
+      if (!topic || typeof topic !== 'object' || Array.isArray(topic) || typeof topic.name !== 'string' || !topic.name.trim()) throw invalidResponse();
+      const grounding = topic.grounding === undefined ? 'source_derived' : String(topic.grounding).trim();
+      if (!GROUNDING.has(grounding)) throw invalidResponse();
+      return {
+        name:topic.name.trim(),
+        definition: typeof topic.definition === 'string' ? topic.definition.trim() : '',
+        key_points: Array.isArray(topic.key_points) ? topic.key_points.map(String).filter(Boolean).slice(0, 8) : [],
+        formulas: Array.isArray(topic.formulas) ? topic.formulas.map(String).filter(Boolean).slice(0, 5) : [],
+        example: typeof topic.example === 'string' ? topic.example.trim() : '',
+        commonly_confused: Array.isArray(topic.commonly_confused) ? topic.commonly_confused.slice(0, 5) : [],
+        goal_relevance: topic.goal_relevance && typeof topic.goal_relevance === 'object' ? topic.goal_relevance : null,
+        review_at: topic.review_at === undefined || topic.review_at === null ? null : String(topic.review_at),
+        grounding
+      };
+    }) : [];
+    if (!topics.length) throw invalidResponse();
+    const quick_revision = Array.isArray(output.quick_revision)
+      ? output.quick_revision.map(String).filter(Boolean).slice(0, 5)
+      : [];
+    return {
+      chapter: output.chapter && typeof output.chapter === 'object' ? output.chapter : null,
+      topics,
+      quick_revision,
+      not_covered_in_source: Array.isArray(output.not_covered_in_source) ? output.not_covered_in_source.map(String).filter(Boolean) : []
+    };
   }
 
   function normalizeGrade(output, questions, localVerdict) {
@@ -106,10 +213,12 @@
         || byIndex.has(result.i) || !VERDICTS.has(result.verdict)
         || !CONFIDENCE.has(result.confidence)
         || typeof result.feedback !== 'string' || !result.feedback.trim()
-        || (result.errorType !== null && result.errorType !== undefined && !ERROR_TYPES.has(result.errorType))) {
+        || (result.errorType !== null && result.errorType !== undefined && !ERROR_TYPES.has(String(result.errorType).toLowerCase().trim().replace(/\s+/g, '_')) && !ERROR_TYPES.has(result.errorType))) {
         throw invalidResponse();
       }
+      const errorType = normalizeErrorTag(result.errorType);
       byIndex.set(result.i, result);
+      result.errorType = errorType;
     }
 
     return {
@@ -128,5 +237,5 @@
     };
   }
 
-  return { normalizeQuestions, normalizeGrade };
+  return { normalizeQuestions, normalizeGrade, normalizeSummary };
 });
