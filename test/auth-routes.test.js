@@ -79,6 +79,40 @@ test('generated questions require valid answers, explanations and real source re
   );
 });
 
+test('generated questions accept AdaptPractice spec-shaped output', () => {
+  const [question] = normalizeQuestions({
+    title: 'Spec practice',
+    questions: [{
+      id: 'q_014',
+      concept_id: 'c_limits_factoring',
+      type: 'multi_select',
+      difficulty: 3,
+      bloom: 'apply',
+      marks: 4,
+      source: { page: 4 },
+      stem: 'Which steps correctly simplify the expression?',
+      options: [
+        { key: 'A', text: 'Factor the numerator' },
+        { key: 'B', text: 'Cancel a common nonzero factor' },
+        { key: 'C', text: 'Divide by zero' }
+      ],
+      answer: ['A', 'B'],
+      solution_steps: ['Factor first.', 'Cancel only the common factor.'],
+      error_tags_if_wrong: { C: 'conceptual' },
+      hints: ['Look for a common factor.', 'Check where cancellation is legal.'],
+      why_generated: 'Baseline check for this concept.',
+      grounding: 'source_derived'
+    }]
+  }, null, { type: 'pdf', pages: [{ page: 4, text: 'Factoring and cancellation are discussed here.' }] });
+  assert.equal(question.type, 'multi');
+  assert.equal(question.text, 'Which steps correctly simplify the expression?');
+  assert.deepEqual(question.answer, [0, 1]);
+  assert.equal(question.concept, 'c_limits_factoring');
+  assert.equal(question.explanation, 'Factor first.\nCancel only the common factor.');
+  assert.equal(question.hint, 'Look for a common factor.');
+  assert.equal(question.grounding, 'source_derived');
+});
+
 test('objective grading uses the answer key and invalid AI grading is rejected', () => {
   const questions = [{ type: 'mcq', answer: 1 }];
   const grade = normalizeGrade({

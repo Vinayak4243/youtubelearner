@@ -57,6 +57,15 @@
     return hints.map(hint => hint.trim()).slice(0, 3);
   }
 
+  function normalizeOptions(options) {
+    if (!Array.isArray(options) || options.length < 2 || options.length > 8) throw invalidResponse();
+    return options.map(option => {
+      if (typeof option === 'string') return option.trim();
+      if (option && typeof option === 'object' && typeof option.text === 'string') return option.text.trim();
+      throw invalidResponse();
+    });
+  }
+
   function normalizeErrorTag(value) {
     if (value === null || value === undefined || value === '') return null;
     const raw = String(value).toLowerCase().trim();
@@ -88,9 +97,14 @@
       throw invalidResponse();
     }
     return output.questions.map(question => {
-      if (!question || typeof question.text !== 'string' || !question.text.trim()
-        || typeof question.explanation !== 'string' || !question.explanation.trim()
-        || typeof question.why !== 'string' || !question.why.trim()) throw invalidResponse();
+      const text = typeof question?.text === 'string' ? question.text : question?.stem;
+      const solution = Array.isArray(question?.solution_steps)
+        ? question.solution_steps.map(String).filter(Boolean).join('\n')
+        : question?.explanation;
+      const why = typeof question?.why === 'string' ? question.why : question?.why_generated;
+      if (!question || typeof text !== 'string' || !text.trim()
+        || typeof solution !== 'string' || !solution.trim()
+        || typeof why !== 'string' || !why.trim()) throw invalidResponse();
 
       const type = normalizeType(question.type);
       if (!QUESTION_TYPES.has(type)) throw invalidResponse();
@@ -103,10 +117,14 @@
         ...question,
         type,
         id: typeof question.id === 'string' && question.id.trim() ? question.id.trim() : undefined,
-        text: question.text.trim(),
+        text: text.trim(),
+        explanation: solution.trim(),
+        why: why.trim(),
         concept: typeof question.concept === 'string' && question.concept.trim()
           ? question.concept.trim()
-          : String(fallbackConcept || 'General'),
+          : typeof question.concept_id === 'string' && question.concept_id.trim()
+            ? question.concept_id.trim()
+            : String(fallbackConcept || 'General'),
         difficulty: normalizeDifficulty(question.difficulty),
         bloom: BLOOM.has(String(question.bloom || '').toLowerCase()) ? String(question.bloom).toLowerCase() : undefined,
         marks: Number.isFinite(Number(question.marks)) ? Number(question.marks) : undefined,
@@ -127,10 +145,7 @@
         else throw invalidResponse();
         normalized.options = ['True', 'False'];
       } else if (type === 'mcq' || type === 'multi') {
-        if (!Array.isArray(question.options) || question.options.length < 2
-          || question.options.length > 8
-          || question.options.some(option => typeof option !== 'string' || !option.trim())) throw invalidResponse();
-        normalized.options = question.options.map(option => option.trim());
+        normalized.options = normalizeOptions(question.options);
         const answer = type === 'multi'
           ? (Array.isArray(question.answer) ? question.answer : [question.answer]).map(value => optionIndex(value, normalized.options))
           : optionIndex(question.answer, normalized.options);
