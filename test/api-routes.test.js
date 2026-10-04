@@ -237,6 +237,10 @@ global.fetch = async (input, init) => {
 };
 
 const app = require('../api/ai/json');
+test('Vercel has explicit functions for both nested snapshot upload endpoints', () => {
+  assert.equal(require('../api/learner/snapshot/chunk'), app);
+  assert.equal(require('../api/learner/snapshot/commit'), app);
+});
 let server;
 let baseUrl;
 

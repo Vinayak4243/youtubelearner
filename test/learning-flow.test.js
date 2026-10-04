@@ -204,6 +204,23 @@ test('snapshot uploads fall back to a revision-checked legacy write when chunk t
   assert.equal(fallback.payload.courses[0].id, 'kept-course');
 });
 
+test('snapshot uploads fall back when Vercel returns 404 for an unregistered nested function route', async () => {
+  const { context } = createHarness();
+  const requests = [];
+  context.crypto = { randomUUID:() => 'upload-id-12345678-1234-1234-1234-123456789012' };
+  context.authRequest = async (path, options) => {
+    requests.push({ path, options });
+    if (path === '/api/learner/snapshot/chunk') {
+      throw Object.assign(new Error('Not Found'), { status:404 });
+    }
+    return { ok:true, legacy:true, revision:0 };
+  };
+  loadAppFunction('function snapshotStorageChunks', 'async function fetchSnapshot', context);
+  const result = await context.uploadSnapshot({ courses:[], events:[] }, 0, null);
+  assert.equal(result.legacy, true);
+  assert.equal(requests.at(-1).path, '/api/learner/snapshot');
+});
+
 test('next assignment prompt includes real prior assignment answers and feedback', async () => {
   const { context, course } = createHarness();
   course.assignments.push({

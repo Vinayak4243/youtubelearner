@@ -336,7 +336,7 @@ async function uploadSnapshot(payload, baseRevision, expectedUpdatedAt){
       body:JSON.stringify({ uploadId, count:chunks.length, baseRevision })
     });
   } catch(error) {
-    if (error.code !== 'snapshot_migration_missing') throw error;
+    if (error.code !== 'snapshot_migration_missing' && error.status !== 404) throw error;
     return authRequest('/api/learner/snapshot', {
       method:'PUT',
       body:JSON.stringify({ payload, expectedUpdatedAt:expectedUpdatedAt ?? null })
