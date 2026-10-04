@@ -14,6 +14,7 @@ const nativeFetch = global.fetch;
 let providerStatus = { status: 200, body: '{}' };
 let providerStreamBody = 'data: {"candidates":[{"content":{"parts":[{"text":"streamed answer"}]}}]}\n\n';
 let lastSnapshotWrite = null;
+let mockSnapshotRevision = 3;
 let youtubePageRequests = [];
 let youtubePlaylistStatus = 200;
 let refreshStatus = 200;
@@ -106,6 +107,31 @@ global.fetch = async (input, init) => {
     }
     if (url.pathname.endsWith('/auth/v1/logout')) {
       return new Response('{}', { status:200, headers:{'content-type':'application/json'} });
+    }
+    if (url.pathname.endsWith('/rpc/get_learner_snapshot_chunks')) {
+      return new Response(JSON.stringify([{
+        snapshot:JSON.stringify({ profile:{ name:'Learner' }, courses:[], events:[] }),
+        revision:mockSnapshotRevision,
+        updated_at:'2026-10-02T00:00:00Z'
+      }]), { status:200, headers:{'content-type':'application/json'} });
+    }
+    if (url.pathname.endsWith('/rpc/get_learner_snapshot_piece')) {
+      return new Response(JSON.stringify([{
+        content:JSON.stringify({ profile:{ name:'Learner' }, courses:[], events:[] }),
+        chunk_count:1,
+        revision:mockSnapshotRevision,
+        updated_at:'2026-10-02T00:00:00Z'
+      }]), { status:200, headers:{'content-type':'application/json'} });
+    }
+    if (url.pathname.endsWith('/rpc/commit_learner_snapshot_upload')) {
+      const payload = JSON.parse(init.body);
+      lastSnapshotWrite = { user_id:'user-1', ...payload };
+      mockSnapshotRevision++;
+      return new Response(JSON.stringify({ ok:true, revision:mockSnapshotRevision }), { status:200, headers:{'content-type':'application/json'} });
+    }
+    if (url.pathname.endsWith('/rest/v1/learner_snapshot_uploads')) {
+      lastSnapshotWrite = { user_id:'user-1', ...JSON.parse(init.body) };
+      return new Response(JSON.stringify([{ upload_id:lastSnapshotWrite.upload_id }]), { status:201, headers:{'content-type':'application/json'} });
     }
     if (url.pathname.endsWith('/rest/v1/rpc/consume_user_ai_rate_limit')) return new Response('true', { status:200, headers:{'content-type':'application/json'} });
     if (url.pathname.endsWith('/auth/v1/user')) {
@@ -565,16 +591,6 @@ test('mocked authentication supports sign-in, sign-out, recovery email and passw
     body:JSON.stringify({ password:'updated-test-password' })
   });
 
-  test('email confirmation exchanges a one-time token for a secure app session', async () => {
-    const response = await fetch(`${baseUrl}/api/auth/verify`, {
-      method:'POST',
-      headers:{ 'content-type':'application/json' },
-      body:JSON.stringify({ token_hash:'valid-test-hash', type:'signup' })
-    });
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).user.id, 'user-1');
-    assert.match(response.headers.get('set-cookie') || '', /ap_refresh=.*HttpOnly/);
-  });
   assert.equal(passwordUpdate.status, 200, await passwordUpdate.clone().text());
 
   const logout = await fetch(`${baseUrl}/api/auth/logout`, {
@@ -586,6 +602,17 @@ test('mocked authentication supports sign-in, sign-out, recovery email and passw
   assert.match(logout.headers.get('set-cookie') || '', /Max-Age=0/);
   if (previousSiteUrl === undefined) delete process.env.AUTH_SITE_URL;
   else process.env.AUTH_SITE_URL = previousSiteUrl;
+});
+
+test('email confirmation exchanges a one-time token for a secure app session', async () => {
+  const response = await fetch(`${baseUrl}/api/auth/verify`, {
+    method:'POST',
+    headers:{ 'content-type':'application/json' },
+    body:JSON.stringify({ token_hash:'valid-test-hash', type:'signup' })
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).user.id, 'user-1');
+  assert.match(response.headers.get('set-cookie') || '', /ap_refresh=.*HttpOnly/);
 });
 
 test('signup database failures return a sanitized error and log only safe diagnostics', async () => {
@@ -684,6 +711,43 @@ test('snapshot ownership is assigned from the verified user, not request data', 
   assert.equal(response.status, 200);
   assert.equal(lastSnapshotWrite.user_id, 'user-1');
   assert.equal(lastSnapshotWrite.payload.profile.name, 'Learner');
+});
+
+test('large snapshot chunks are stored under the authenticated account and committed by revision', async () => {
+  const uploadId = 'snapshotupload0123456789';
+  const content = JSON.stringify({ courses:[], events:[] });
+  const headers = { 'content-type':'application/json', authorization:'Bearer '+testAccessToken };
+  const chunk = await fetch(`${baseUrl}/api/learner/snapshot/chunk`, {
+    method:'POST', headers,
+    body:JSON.stringify({ uploadId, index:0, count:1, content })
+  });
+  assert.equal(chunk.status, 200);
+  assert.equal(lastSnapshotWrite.user_id, 'user-1');
+  assert.equal(lastSnapshotWrite.upload_id, uploadId);
+  assert.equal(lastSnapshotWrite.content, content);
+  const expectedRevision = mockSnapshotRevision;
+  const commit = await fetch(`${baseUrl}/api/learner/snapshot/commit`, {
+    method:'POST', headers,
+    body:JSON.stringify({ uploadId, count:1, baseRevision:expectedRevision })
+  });
+  assert.equal(commit.status, 200);
+  assert.equal(lastSnapshotWrite.p_upload_id, uploadId);
+  assert.equal(lastSnapshotWrite.p_expected_revision, expectedRevision);
+});
+
+test('snapshot chunk endpoint validates per-request payload size', async () => {
+  const response = await fetch(`${baseUrl}/api/learner/snapshot/chunk`, {
+    method:'POST',
+    headers:{ 'content-type':'application/json', authorization:'Bearer '+testAccessToken },
+    body:JSON.stringify({
+      uploadId:'0123456789abcdef',
+      index:0,
+      count:1,
+      content:'x'.repeat(1024 * 1024 + 1)
+    })
+  });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, 'invalid_snapshot_chunk');
 });
 
 test.after(() => { global.fetch = nativeFetch; });

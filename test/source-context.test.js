@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { parseTimecode, parseTranscript, timestampWindow, pageText, extractPdfPages } = require('../public/source-context');
+const { parseTimecode, parseTranscript, timestampWindow, pageText, selectPdfPages, pdfPageRange, extractPdfPages } = require('../public/source-context');
 
 test('parses YouTube-style minute and hour timecodes', () => {
   assert.equal(parseTimecode('18:42'), 1122);
@@ -34,6 +34,27 @@ test('PDF lookup returns the exact attributed page only', () => {
   const pages = [{ page:1, text:'First page' }, { page:37, text:'Relevant page' }];
   assert.equal(pageText(pages, 37), 'Relevant page');
   assert.equal(pageText(pages, 36), '');
+});
+
+test('PDF chapter mapping covers every page from a real start through the page before the next chapter', () => {
+  const pages = Array.from({ length:8 }, (_, index) => ({ page:index+1, text:`content on page ${index+1}` }));
+  const lessons = [{ title:'Chapter one', page:2 }, { title:'Chapter two', page:5 }];
+  assert.deepEqual(pdfPageRange(lessons, 0, pages).map(page => page.page), [2,3,4]);
+  assert.deepEqual(pdfPageRange(lessons, 1, pages).map(page => page.page), [5,6,7,8]);
+  assert.deepEqual(pdfPageRange([{ title:'Unmapped chapter' }], 0, pages), []);
+});
+
+test('long PDF retrieval selects relevant page chunks while retaining their real page references', () => {
+  const pages = [
+    { page:2, text:'Foundational terms '.repeat(100) },
+    { page:3, text:'A detailed example of derivative rules '.repeat(100) },
+    { page:4, text:'Derivative rules and a second worked example '.repeat(100) },
+    { page:5, text:'Unrelated closing notes '.repeat(100) }
+  ];
+  const selected = selectPdfPages(pages, 'derivative worked example', 3000);
+  assert.ok(selected.some(page => page.page === 3 || page.page === 4));
+  assert.ok(selected.every(page => Number.isInteger(page.page)));
+  assert.ok(selected.reduce((size,page) => size + page.text.length, 0) <= 3000);
 });
 
 test('PDF extraction reads beyond page 60 and retains text beyond 14k characters', async () => {

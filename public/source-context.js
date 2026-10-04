@@ -66,6 +66,35 @@
     return (pages || []).find(page => Number(page.page) === Number(pageNumber))?.text || '';
   }
 
+  function selectPdfPages(pages, query, maxChars) {
+    const limit = Math.max(1000, Number(maxChars) || 120000);
+    const terms = [...new Set(String(query || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [])];
+    const ranked = (pages || []).filter(page => page.text && page.text.trim()).map((page, index) => {
+      const text = page.text.toLowerCase();
+      const score = terms.reduce((total, term) => total + Math.min(5, text.split(term).length - 1), 0);
+      return { page, index, score };
+    });
+    const selected = [];
+    let used = 0;
+    for (const item of [...ranked].sort((a,b) => b.score - a.score || a.index - b.index)) {
+      const remaining = limit - used;
+      if (remaining <= 0) break;
+      const text = item.page.text.slice(0, remaining);
+      selected.push({ page:item.page.page, text });
+      used += text.length + 24;
+    }
+    return selected.sort((a,b) => Number(a.page) - Number(b.page));
+  }
+
+  function pdfPageRange(lessonEntries, index, pages) {
+    const startPage = Number(lessonEntries[index]?.page);
+    if (!Number.isInteger(startPage) || startPage < 1) return [];
+    const nextStart = lessonEntries.slice(index + 1)
+      .map(entry => Number(entry.page))
+      .find(page => Number.isInteger(page) && page > startPage);
+    return (pages || []).filter(page => Number(page.page) >= startPage && (!nextStart || Number(page.page) < nextStart));
+  }
+
   async function extractPdfPages(document, onProgress) {
     const pages = [];
     let text = '';
@@ -80,5 +109,5 @@
     return { pages, text:text.trim() };
   }
 
-  return { parseTimecode, parseTranscript, timestampWindow, pageText, extractPdfPages };
+  return { parseTimecode, parseTranscript, timestampWindow, pageText, selectPdfPages, pdfPageRange, extractPdfPages };
 });

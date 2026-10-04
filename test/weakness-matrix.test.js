@@ -101,11 +101,71 @@ test('later targeted correct practice shows improvement without replacing the or
   const topic = course.concepts.Fractions;
   const history = WeaknessMatrix.attemptHistory(topic);
   assert.equal(history.length, 5);
-  assert.deepEqual(history.find(record => record.id === 'mistake-1'), mistakeBeforePractice);
+  const retainedMistake = history.find(record => record.id === 'mistake-1');
+  for (const key of ['id','studentAnswer','correctAnswer','feedback','category','attemptedAt','source']) {
+    assert.deepEqual(retainedMistake[key], mistakeBeforePractice[key]);
+  }
+  assert.equal(retainedMistake.improvedByAttemptId, 'practice-1');
   assert.equal(WeaknessMatrix.mistakeCount(topic), 1);
   assert.equal(topic.status, 'improving');
   assert.ok(topic.mastery > 70);
   assert.equal(history.filter(record => record.verdict === 'correct').length, 4);
+});
+
+test('a concept recovers to mastery after independent success while retaining every mistake', () => {
+  const course = { id:'course-recovery', name:'Recovery course', concepts:{} };
+  for (let index = 0; index < 3; index++) {
+    applyAttempt(course, {
+      id:`recovery-mistake-${index}`, assignmentId:`recovery-assignment-${index}`,
+      verdict:'incorrect', answer:0, category:'conceptual', timestamp:1780500000000 + index * 1000
+    });
+  }
+  const concept = course.concepts.Fractions;
+  const priorityBefore = WeaknessMatrix.learningState(concept).priority;
+  for (let index = 0; index < 10; index++) {
+    applyAttempt(course, {
+      id:`recovery-correct-${index}`, assignmentId:`recovery-followup-${index}`,
+      verdict:'correct', answer:1, timestamp:1780500010000 + index * 1000
+    });
+  }
+  assert.equal(concept.attempts, 13);
+  assert.equal(WeaknessMatrix.mistakeCount(concept), 3);
+  assert.equal(concept.attemptHistory.filter(record => record.mistake).length, 3);
+  assert.equal(concept.status, 'mastered');
+  assert.ok(concept.mastery >= 80);
+  assert.ok(WeaknessMatrix.learningState(concept).priority < priorityBefore);
+  assert.ok(concept.attemptHistory.filter(record => record.mistake).every(record => record.improvedAt));
+});
+
+test('question-level timing and pending subjective attempts are stored without affecting mastery', () => {
+  const course = { id:'pending-course', name:'Pending course', concepts:{} };
+  const assignment = {
+    id:'pending-assignment', started:1780500000000, submittedAt:1780500090000,
+    timeSec:90, hints:{ 0:true },
+    questionTiming:{ 0:{ firstAnsweredAt:1780500012000, lastChangedAt:1780500030000, answerChanges:3 } }
+  };
+  const question = { id:'q-pending', type:'short', text:'Explain it', concept:'Core', answer:'Expected' };
+  const pendingResult = { verdict:'pending', confidence:'low', feedback:'Saved; awaiting AI evaluation.' };
+  const record = WeaknessMatrix.createAttemptRecord({
+    id:'pending-record', course, assignment, question, answer:'My response', result:pendingResult,
+    index:0, source:{}, attemptedAt:assignment.submittedAt
+  });
+  const concept = WeaknessMatrix.recordConceptAttempt(course, 'Core', pendingResult, record);
+  assert.equal(record.verdict, 'pending');
+  assert.equal(record.mistake, false);
+  assert.equal(record.answerChanges, 3);
+  assert.equal(record.timing.secondsToFirstAnswer, 12);
+  assert.equal(record.timing.elapsedSeconds, 90);
+  assert.equal(concept.attempts, 1);
+  assert.equal(concept.errors, 0);
+  assert.equal(concept.mastery, 35);
+  WeaknessMatrix.resolvePendingAttempt(course, 'Core', record.id, {
+    verdict:'incorrect', errorType:'conceptual', confidence:'medium', feedback:'The core distinction is missing.'
+  });
+  assert.equal(record.verdict, 'incorrect');
+  assert.equal(record.mistake, true);
+  assert.equal(concept.errors, 1);
+  assert.equal(concept.attempts, 1);
 });
 
 test('attempt histories merge across device and cloud snapshots without dropping or duplicating records', () => {
@@ -113,6 +173,19 @@ test('attempt histories merge across device and cloud snapshots without dropping
   applyAttempt(course, {
     id:'mistake-1', assignmentId:'assignment-1', verdict:'partial', answer:0,
     category:'application', timestamp:1780500000000
+  });
+
+  test('legacy aggregate attempts stay intact and full event histories are not capped during merge', () => {
+    const events = Array.from({ length:750 }, (_, index) => ({ id:`event-${index}`, t:index, type:'lesson_opened' }));
+    const merged = mergeSnapshots({ events:events.slice(0,500), courses:[] }, { events:events.slice(500), courses:[] });
+    assert.equal(merged.events.length, 750);
+    const legacy = { name:'Legacy concept', attempts:7, errors:3, mastery:42, history:[] };
+    const combined = mergeSnapshots(
+      { courses:[{ id:'course-legacy', sources:[], assignments:[], concepts:{ Legacy:legacy } }] },
+      { courses:[{ id:'course-legacy', sources:[], assignments:[], concepts:{ Legacy:{ ...legacy } } }] }
+    );
+    assert.equal(combined.courses[0].concepts.Legacy.errors, 3);
+    assert.deepEqual(combined.courses[0].concepts.Legacy.attemptHistory, []);
   });
   applyAttempt(course, {
     id:'practice-1', assignmentId:'assignment-2', verdict:'correct', answer:1,

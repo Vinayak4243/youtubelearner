@@ -483,31 +483,89 @@ app.post('/api/auth/reset-password', authenticateRequest, asyncRoute(async (req,
 }));
 
 app.get('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, res) => {
-  const { data, error } = await req.userSupabase.from('learner_snapshots').select('payload,updated_at').eq('user_id', req.user.id).maybeSingle();
+  const { data, error } = await req.userSupabase.rpc('get_learner_snapshot_piece', { p_chunk_index:-1 });
   if (error) return bad(res, 503, 'Could not load your learning data. Apply the database migration and retry.', 'database_unavailable');
+  const row = Array.isArray(data) ? data[0] : data;
+  let snapshot = null;
+  try { snapshot = row?.content ? JSON.parse(row.content) : null; }
+  catch(error) { return bad(res, 503, 'The saved learning data could not be decoded. Contact support before retrying.', 'invalid_saved_snapshot'); }
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ user: { id: req.user.id, email: req.user.email }, snapshot: data?.payload || null, updatedAt: data?.updated_at || null });
+  res.json({
+    user:{ id:req.user.id, email:req.user.email },
+    snapshot,
+    hasSnapshot:Number(row?.chunk_count) > 0,
+    chunkCount:Number(row?.chunk_count) || 0,
+    revision:Number(row?.revision) || 0,
+    updatedAt:row?.updated_at || null
+  });
+}));
+
+app.get('/api/learner/snapshot/chunk', authenticateRequest, asyncRoute(async (req, res) => {
+  const index = Number(req.query.index);
+  if (!Number.isInteger(index) || index < 0 || index >= 128) return bad(res, 400, 'Snapshot chunk index is invalid.', 'invalid_snapshot_chunk');
+  const { data, error } = await req.userSupabase.rpc('get_learner_snapshot_piece', { p_chunk_index:index });
+  if (error) return bad(res, 503, 'Could not load your learning data. Apply the large-snapshot migration and retry.', 'database_unavailable');
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row?.content) return bad(res, 404, 'The requested learning-data chunk is unavailable.', 'snapshot_chunk_not_found');
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ index, count:Number(row.chunk_count) || 0, revision:Number(row.revision) || 0, content:row.content });
+}));
+
+app.post('/api/learner/snapshot/chunk', authenticateRequest, asyncRoute(async (req, res) => {
+  const { uploadId, index, count, content } = req.body || {};
+  if (typeof uploadId !== 'string' || !/^[A-Za-z0-9_-]{16,80}$/.test(uploadId)
+    || !Number.isInteger(index) || !Number.isInteger(count) || count < 1 || count > 128
+    || index < 0 || index >= count || typeof content !== 'string' || !content
+    || Buffer.byteLength(content, 'utf8') > 1024 * 1024) {
+    return bad(res, 400, 'Snapshot chunk is invalid or too large.', 'invalid_snapshot_chunk');
+  }
+  const { error } = await req.userSupabase.from('learner_snapshot_uploads').upsert({
+    user_id:req.user.id, upload_id:uploadId, chunk_index:index, chunk_count:count, content
+  }, { onConflict:'user_id,upload_id,chunk_index' });
+  if (error) return bad(res, 503, 'Could not stage learning data. Apply the large-snapshot migration and retry.', 'database_unavailable');
+  res.json({ ok:true, index });
+}));
+
+app.post('/api/learner/snapshot/commit', authenticateRequest, asyncRoute(async (req, res) => {
+  const { uploadId, count, baseRevision } = req.body || {};
+  if (typeof uploadId !== 'string' || !/^[A-Za-z0-9_-]{16,80}$/.test(uploadId)
+    || !Number.isInteger(count) || count < 1 || count > 128
+    || !Number.isInteger(baseRevision) || baseRevision < 0) {
+    return bad(res, 400, 'Snapshot commit details are invalid.', 'invalid_snapshot');
+  }
+  const { data, error } = await req.userSupabase.rpc('commit_learner_snapshot_upload', {
+    p_upload_id:uploadId,
+    p_expected_revision:baseRevision,
+    p_chunk_count:count
+  });
+  if (error) return bad(res, 503, 'Could not commit learning data. Check the large-snapshot migration and retry.', 'database_unavailable');
+  if (!data?.ok) return bad(res, 409, 'Learning data changed on another device. Synchronizing both versions.', 'snapshot_conflict');
+  res.json({ ok:true, revision:Number(data.revision) });
 }));
 
 app.put('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, res) => {
   const payload = req.body?.payload;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return bad(res, 400, 'A learning snapshot object is required.', 'invalid_snapshot');
-  if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > 3 * 1024 * 1024) return bad(res, 413, 'The learning snapshot is too large to save.', 'snapshot_too_large');
-  const result = await req.userSupabase.from('learner_snapshots').upsert({ user_id: req.user.id, payload, updated_at: new Date().toISOString() }, { onConflict: 'user_id' }).select('updated_at').single();
+  if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > 3 * 1024 * 1024) return bad(res, 413, 'This legacy save endpoint accepts up to 3 MB. Use the chunked snapshot uploader.', 'snapshot_too_large');
+  const result = await req.userSupabase.from('learner_snapshots').upsert({ user_id:req.user.id, payload, updated_at:new Date().toISOString() }, { onConflict:'user_id' }).select('updated_at').single();
   if (result.error) return bad(res, 503, 'Could not save your learning data. Check that the database migration has been applied.', 'database_unavailable');
-  res.json({ ok: true, updatedAt: result.data.updated_at });
+  res.json({ ok:true, updatedAt:result.data.updated_at });
 }));
 
 app.get('/api/learner/export', authenticateRequest, asyncRoute(async (req, res) => {
-  const result = await req.userSupabase.from('learner_snapshots').select('payload,updated_at').eq('user_id', req.user.id).maybeSingle();
+  const result = await req.userSupabase.rpc('get_learner_snapshot_chunks');
   if (result.error) return bad(res, 503, 'Could not export your learning data. Apply the database migration and retry.', 'database_unavailable');
+  const row = Array.isArray(result.data) ? result.data[0] : result.data;
+  let snapshot = null;
+  try { snapshot = row?.snapshot ? JSON.parse(row.snapshot) : null; }
+  catch(error) { return bad(res, 503, 'The saved learning data could not be decoded. Contact support before retrying.', 'invalid_saved_snapshot'); }
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Disposition', 'attachment; filename="adaptpractice-export.json"');
-  res.json({ exportedAt: new Date().toISOString(), userId: req.user.id, snapshot: result.data?.payload || null });
+  res.json({ exportedAt:new Date().toISOString(), userId:req.user.id, snapshot });
 }));
 
 app.delete('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, res) => {
-  for (const table of ['learner_snapshots','student_profiles','learning_events','courses']) {
+  for (const table of ['learner_snapshot_uploads','learner_snapshot_chunks','learner_snapshot_heads','learner_snapshots','student_profiles','learning_events','courses']) {
     const { error } = await req.userSupabase.from(table).delete().eq('user_id', req.user.id);
     if (error) return bad(res, 503, 'Could not completely delete your learning data. Retry after checking the database migration.', 'database_unavailable');
   }

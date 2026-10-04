@@ -1,8 +1,12 @@
 (function (root, factory) {
-  const api = factory();
+  const api = factory(
+    typeof module === 'object' && module.exports
+      ? require('./weakness-matrix')
+      : root.AdaptPracticeWeaknessMatrix
+  );
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.AdaptPracticeSnapshotMerge = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (WeaknessMatrix) {
   function mergeLessons(cloudLessons, localLessons) {
     const merged = (cloudLessons || []).map(lesson => ({ ...lesson }));
     const indexes = new Map(merged.map((lesson, index) => [lesson.id, index]));
@@ -116,6 +120,7 @@
         confusion:Math.max(Number(cloud.confusion || 0), Number(local.confusion || 0)),
         source:cloud.source || local.source
       };
+      Object.assign(merged[name], WeaknessMatrix.learningState(merged[name]));
     }
     return merged;
   }
@@ -153,13 +158,16 @@
       const index = courseIndexes.get(course.id);
       merged.courses[index] = mergeCourse(merged.courses[index], course);
     }
-    const eventIds = new Set(merged.events.map(event => event.id));
+    const eventKey = event => event.id || JSON.stringify(event);
+    const eventIds = new Set(merged.events.map(eventKey));
     for (const event of Array.isArray(local.events) ? local.events : []) {
-      if (event.id && !eventIds.has(event.id)) {
+      const key = eventKey(event);
+      if (!eventIds.has(key)) {
         merged.events.push(event);
-        eventIds.add(event.id);
+        eventIds.add(key);
       }
     }
+    merged.events.sort((a,b) => Number(b.t || 0) - Number(a.t || 0));
     if (!merged.profile) merged.profile = local.profile || null;
     merged.behaviour = { ...(merged.behaviour || {}) };
     const localBehaviour = local.behaviour || {};

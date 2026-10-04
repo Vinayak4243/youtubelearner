@@ -25,6 +25,8 @@
 
   function createAttemptRecord({ id, course, assignment, question, answer, result, index, source, attemptedAt }) {
     const verdict = result.verdict;
+    const pending = verdict === 'pending';
+    const questionTiming = assignment.questionTiming?.[index] || {};
     return {
       id,
       courseId:course.id,
@@ -41,16 +43,24 @@
       explanation:question.explanation || '',
       feedback:result.feedback || question.explanation || '',
       verdict,
-      mistake:verdict !== 'correct',
-      category:verdict === 'correct' ? null : mistakeCategory(result.errorType),
-      categoryDetail:verdict === 'correct' ? null : (result.errorType || null),
+      gradingStatus:pending ? 'pending' : 'graded',
+      mistake:!pending && verdict !== 'correct',
+      category:verdict === 'correct' || pending ? null : mistakeCategory(result.errorType),
+      categoryDetail:verdict === 'correct' || pending ? null : (result.errorType || null),
       confidence:result.confidence || null,
+      difficulty:question.difficulty || 'medium',
       attemptedAt,
       hintUsed:Boolean(assignment.hints && assignment.hints[index]),
+      answerChanges:Number(questionTiming.answerChanges) || 0,
       timing:{
         assignmentStartedAt:assignment.started || null,
         submittedAt:assignment.submittedAt || attemptedAt,
-        elapsedSeconds:Number.isFinite(assignment.timeSec) ? assignment.timeSec : null
+        elapsedSeconds:Number.isFinite(assignment.timeSec) ? assignment.timeSec : null,
+        firstAnsweredAt:questionTiming.firstAnsweredAt || null,
+        answerChangedAt:questionTiming.lastChangedAt || null,
+        secondsToFirstAnswer:questionTiming.firstAnsweredAt
+          ? Math.max(0, Math.round((questionTiming.firstAnsweredAt - (assignment.started || questionTiming.firstAnsweredAt)) / 1000))
+          : null
       },
       source:{
         id:source.id || null,
@@ -88,7 +98,7 @@
     } else if (result.verdict === 'partial') {
       concept.errors += 0.5;
       concept.mastery = mastery + (68 - mastery) * 0.10;
-    } else {
+    } else if (result.verdict === 'incorrect') {
       concept.errors++;
       concept.mastery = Math.max(3, mastery * 0.78 - 2);
     }
@@ -96,6 +106,14 @@
     if (attemptRecord.mistake) {
       const category = attemptRecord.category || mistakeCategory(result.errorType);
       concept.errorTypes[category] = (concept.errorTypes[category] || 0) + (result.verdict === 'partial' ? 0.5 : 1);
+    }
+    if (result.verdict === 'correct') {
+      for (const earlier of concept.attemptHistory) {
+        if (earlier.mistake && !earlier.improvedAt) {
+          earlier.improvedAt = attemptRecord.attemptedAt;
+          earlier.improvedByAttemptId = attemptRecord.id;
+        }
+      }
     }
     if (attemptRecord.source && (attemptRecord.source.lessonId || attemptRecord.source.page || attemptRecord.source.timestamp != null)) {
       concept.source = {
@@ -108,11 +126,81 @@
     concept.history.push({ t:attemptRecord.attemptedAt, v:result.verdict, m:concept.mastery, d:result.difficulty || 'medium' });
     if (concept.history.length > 40) concept.history.shift();
     concept.attemptHistory.push(attemptRecord);
-    if (concept.attempts >= 3 && concept.errors >= 2 && concept.mastery < 65) concept.status = 'weakness';
-    else if (concept.errors >= 1 && concept.mastery < 70) concept.status = 'watch';
-    else if (concept.attempts >= 4 && concept.mastery >= 82 && concept.errors <= 1) concept.status = 'mastered';
-    else if (concept.attempts >= 2 && concept.mastery >= 70) concept.status = 'improving';
-    else concept.status = concept.attempts ? 'learning' : 'new';
+    Object.assign(concept, learningState(concept));
+    attemptRecord.masteryAfter = concept.mastery;
+    attemptRecord.statusAfter = concept.status;
+    return concept;
+  }
+
+  function learningState(concept) {
+    const evidence = Array.isArray(concept.attemptHistory) && concept.attemptHistory.length
+      ? concept.attemptHistory.filter(record => record.verdict !== 'pending').slice(-6)
+      : (Array.isArray(concept.history) ? concept.history.slice(-6) : []);
+    const recentCorrect = evidence.filter(record => record.verdict === 'correct' || record.v === 'correct');
+    const recentErrors = evidence.filter(record => record.verdict === 'incorrect' || record.verdict === 'partial'
+      || (record.v && record.v !== 'correct'));
+    const independentCorrect = recentCorrect.filter(record => !record.hintUsed);
+    const appropriatelyDifficult = independentCorrect.filter(record => record.difficulty === 'medium' || record.difficulty === 'hard' || record.d === 'medium' || record.d === 'hard');
+    const mastery = Number(concept.mastery) || 0;
+    let status = 'new';
+    if (Number(concept.attempts) > 0 || Number(concept.confusion) > 0) status = 'learning';
+    if (evidence.length >= 4 && recentErrors.length >= 2 && recentCorrect.length < 2 && mastery < 65) status = 'weakness';
+    else if (evidence.length >= 2 && recentErrors.length >= 2 && mastery < 70) status = 'watch';
+    else if (mastery >= 80 && independentCorrect.length >= 4 && appropriatelyDifficult.length >= 2) status = 'mastered';
+    else if (recentCorrect.length >= 2 && (recentCorrect.length > recentErrors.length || mastery >= 65)) status = 'improving';
+    const recentErrorWeight = recentErrors.reduce((total, record) => total + (record.verdict === 'partial' ? 0.5 : 1), 0);
+    let priority = (100 - mastery) * 0.6 + recentErrorWeight * 7 + (Number(concept.confusion) || 0) * 6;
+    if (status === 'weakness') priority += 18;
+    if (status === 'mastered') priority -= 40;
+    const ageDays = (Date.now() - (Number(concept.lastSeen) || Date.now())) / 864e5;
+    priority += Math.max(0, Math.min(ageDays * 1.5, 12));
+    return {
+      status,
+      priority:Math.round(priority),
+      recentCorrect:recentCorrect.length,
+      recentErrors:recentErrors.length,
+      independentCorrect:independentCorrect.length
+    };
+  }
+
+  function resolvePendingAttempt(course, name, id, result) {
+    const concept = course.concepts?.[name];
+    const record = concept && concept.attemptHistory?.find(item => item.id === id);
+    if (!record || record.verdict !== 'pending' || result.verdict === 'pending') return concept || null;
+    record.verdict = result.verdict;
+    record.gradingStatus = 'graded';
+    record.feedback = result.feedback || record.feedback;
+    record.category = result.verdict === 'correct' ? null : mistakeCategory(result.errorType);
+    record.categoryDetail = result.verdict === 'correct' ? null : result.errorType || null;
+    record.confidence = result.confidence || record.confidence;
+    record.mistake = result.verdict !== 'correct';
+    concept.correct = Number(concept.correct) || 0;
+    concept.errors = Number(concept.errors) || 0;
+    if (result.verdict === 'correct') {
+      concept.correct++;
+      const mastery = Number(concept.mastery) || 0;
+      concept.mastery = mastery + (record.hintUsed ? (80 - mastery) * 0.14 : (94 - mastery) * 0.30);
+      for (const earlier of concept.attemptHistory) {
+        if (earlier.id !== record.id && earlier.mistake && !earlier.improvedAt) {
+          earlier.improvedAt = record.attemptedAt;
+          earlier.improvedByAttemptId = record.id;
+        }
+      }
+    } else {
+      concept.errors += result.verdict === 'partial' ? 0.5 : 1;
+      concept.mastery = result.verdict === 'partial'
+        ? (Number(concept.mastery) || 0) + (68 - (Number(concept.mastery) || 0)) * 0.10
+        : Math.max(3, (Number(concept.mastery) || 0) * 0.78 - 2);
+      const category = record.category || 'other';
+      concept.errorTypes = concept.errorTypes || {};
+      concept.errorTypes[category] = (Number(concept.errorTypes[category]) || 0) + (result.verdict === 'partial' ? 0.5 : 1);
+    }
+    concept.mastery = Math.max(0, Math.min(100, Math.round(concept.mastery)));
+    const historyItem = concept.history?.slice().reverse().find(item => item.t === record.attemptedAt && item.v === 'pending');
+    if (historyItem) { historyItem.v = result.verdict; historyItem.m = concept.mastery; }
+    record.masteryAfter = concept.mastery;
+    Object.assign(concept, learningState(concept));
+    record.statusAfter = concept.status;
     return concept;
   }
 
@@ -128,5 +216,5 @@
     );
   }
 
-  return { mistakeCategory, answerText, createAttemptRecord, recordConceptAttempt, attemptHistory, mistakeCount };
+  return { mistakeCategory, answerText, createAttemptRecord, recordConceptAttempt, resolvePendingAttempt, learningState, attemptHistory, mistakeCount };
 });

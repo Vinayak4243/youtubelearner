@@ -3,6 +3,42 @@
 
 AdaptPractice turns YouTube lessons and PDFs into interactive courses. It generates lessons and practice, tracks mistakes by concept, and uses those records to shape later practice.
 
+## Deploying this repository
+
+The active application is the repository-root Express server and the frontend
+in `public/` (`server.js` serves `public/index.html`). The nested
+`adaptpractice/` directory is an older standalone copy; its Claude/Ollama
+instructions do not describe this deployment.
+
+Use Node.js 24, install the root dependencies, configure the environment
+variables below, then run `npm start`. Run `npm test` before deployment. The
+active server uses:
+
+- `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` (or `SUPABASE_ANON_KEY`) for
+  account authentication and private student data.
+- `GEMINI_API_KEY` with optional `GEMINI_MODEL` and `GEMINI_FALLBACK_MODEL`,
+  or `OPENAI_API_KEY` with optional `GPT_MODEL`.
+- `YOUTUBE_API_KEY` for automated video and playlist imports.
+- `AUTH_SITE_URL` set to the exact public production origin, without a
+  trailing slash.
+
+Before deploying the snapshot-storage changes, apply
+[`supabase/migrations/202610020001_adaptpractice.sql`](./supabase/migrations/202610020001_adaptpractice.sql)
+to the Supabase project. It adds owner-protected snapshot chunks and
+revision-checked save functions while retaining the legacy snapshot table for
+reads during migration. Confirm the migration and `consume_user_ai_rate_limit`
+function in Supabase before enabling student writes.
+
+In Supabase **Authentication → URL Configuration**, set the Site URL to the
+same `AUTH_SITE_URL` and allow the confirmation/reset redirects used by the
+app, including `/?auth=verify` and `/?auth=reset` on that origin. In Vercel,
+configure the required environment variables for Production and redeploy. If
+students should access the `vercel.app` production URL without a Vercel login,
+disable Vercel Authentication protection for production deployments (or serve
+students from an already-unprotected custom domain). Keep Supabase account
+authentication enabled; it protects student accounts and data independently
+of Vercel deployment protection.
+
 ## 🚀 Features
 
 - **Source-based courses**: Build a course from YouTube videos, playlists, PDFs, or pasted notes.

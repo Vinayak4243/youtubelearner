@@ -8,7 +8,7 @@
   const CONFIDENCE = new Set(['low', 'medium', 'high']);
   const ERROR_TYPES = new Set([
     'conceptual', 'application', 'calculation', 'logical reasoning', 'recall',
-    'misreading', 'syntax', 'implementation', 'edge case', 'careless', 'incomplete'
+    'misreading', 'syntax', 'implementation', 'edge case', 'careless', 'incomplete', 'other'
   ]);
 
   function invalidResponse() {
@@ -45,6 +45,11 @@
           : String(fallbackConcept || 'General'),
         difficulty: ['easy', 'medium', 'hard'].includes(question.difficulty) ? question.difficulty : 'medium'
       };
+      if (question.tolerance !== undefined) {
+        const tolerance = Number(question.tolerance);
+        if (!Number.isFinite(tolerance) || tolerance < 0) throw invalidResponse();
+        normalized.tolerance = tolerance;
+      }
 
       if (type === 'tf') {
         const answer = question.answer;
