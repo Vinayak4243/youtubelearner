@@ -16,6 +16,7 @@ let providerStreamBody = 'data: {"candidates":[{"content":{"parts":[{"text":"str
 let lastSnapshotWrite = null;
 let mockSnapshotRevision = 3;
 let missingSnapshotRpc = false;
+let missingAiRateLimitRpc = false;
 let youtubePageRequests = [];
 let youtubePlaylistStatus = 200;
 let refreshStatus = 200;
@@ -140,7 +141,15 @@ global.fetch = async (input, init) => {
       lastSnapshotWrite = { user_id:'user-1', ...JSON.parse(init.body) };
       return new Response(JSON.stringify([{ upload_id:lastSnapshotWrite.upload_id }]), { status:201, headers:{'content-type':'application/json'} });
     }
-    if (url.pathname.endsWith('/rest/v1/rpc/consume_user_ai_rate_limit')) return new Response('true', { status:200, headers:{'content-type':'application/json'} });
+    if (url.pathname.endsWith('/rest/v1/rpc/consume_user_ai_rate_limit')) {
+      if (missingAiRateLimitRpc) {
+        return new Response(JSON.stringify({
+          code:'PGRST202',
+          message:'Could not find the function public.consume_user_ai_rate_limit.'
+        }), { status:404, headers:{'content-type':'application/json'} });
+      }
+      return new Response('true', { status:200, headers:{'content-type':'application/json'} });
+    }
     if (url.pathname.endsWith('/auth/v1/user')) {
       if (init.method && init.method !== 'GET') {
         return new Response(JSON.stringify({ id:'user-1', email:'learner@example.test' }), { status:200, headers:{'content-type':'application/json'} });
@@ -332,6 +341,22 @@ test('AI provider credentials come only from the server environment', async () =
   assert.equal(responseText.status, 200, await responseText.clone().text());
   assert.deepEqual(await responseText.json(), { text:'{"ok":true}' });
   assert.equal(generatedResponseMimeTypes[1], null);
+});
+
+test('AI generation uses the per-instance rate limiter when the database rate-limit RPC is not deployed', async () => {
+  missingAiRateLimitRpc = true;
+  try {
+    const response = await fetch(`${baseUrl}/api/ai/text`, {
+      method:'POST',
+      headers:{ 'content-type':'application/json', authorization:'Bearer '+testAccessToken },
+      body:JSON.stringify({ prompt:'test prompt: summarize this verified lesson transcript.' })
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(response.headers.get('x-adaptpractice-rate-limit-mode'), 'instance-fallback');
+    assert.deepEqual(await response.json(), { text:'{"ok":true}' });
+  } finally {
+    missingAiRateLimitRpc = false;
+  }
 });
 
 test('AI generation falls back to an advertised Gemini model when configured model is retired', async () => {

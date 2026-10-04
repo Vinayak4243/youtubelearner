@@ -69,6 +69,11 @@ async function persistentUserAiRateLimit(req, res, next) {
   try {
     const { data, error } = await req.userSupabase.rpc('consume_user_ai_rate_limit', { max_requests:20 });
     if (error) {
+      if (isMissingSupabaseRpc(error)) {
+        console.warn('consume_user_ai_rate_limit is missing; using the per-instance AI rate limiter until the migration is applied.');
+        res.setHeader('X-AdaptPractice-Rate-Limit-Mode', 'instance-fallback');
+        return next();
+      }
       console.error('Persistent AI rate limit unavailable:', error.code || 'database_error');
       return bad(res, 503, 'AI requests are temporarily unavailable because the account rate limit could not be checked.', 'database_unavailable');
     }
@@ -79,14 +84,6 @@ async function persistentUserAiRateLimit(req, res, next) {
     return bad(res, 503, 'AI requests are temporarily unavailable because the account rate limit could not be checked.', 'database_unavailable');
   }
 }
-
-app.use('/api/auth/', rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 12,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many authentication attempts. Try again later.', code: 'rate_limited' }
-}));
 
 const APP_ROOT = fs.existsSync(path.join(__dirname, 'public')) ? path.join(__dirname, 'public') : __dirname;
 app.use(express.static(APP_ROOT, { index: false }));
@@ -100,7 +97,7 @@ function bad(res, status, message, code) {
   return res.status(status).json({ error: message, ...(code ? { code } : {}) });
 }
 
-function isMissingSnapshotRpc(error) {
+function isMissingSupabaseRpc(error) {
   return ['PGRST202', '42883'].includes(String(error?.code || ''));
 }
 
@@ -488,7 +485,7 @@ app.post('/api/auth/reset-password', authenticateRequest, asyncRoute(async (req,
 
 app.get('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, res) => {
   const { data, error } = await req.userSupabase.rpc('get_learner_snapshot_piece', { p_chunk_index:-1 });
-  if (error && isMissingSnapshotRpc(error)) {
+  if (error && isMissingSupabaseRpc(error)) {
     const legacy = await req.userSupabase.from('learner_snapshots')
       .select('payload,updated_at')
       .eq('user_id', req.user.id)

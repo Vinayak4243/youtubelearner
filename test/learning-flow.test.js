@@ -47,6 +47,7 @@ function createHarness() {
       ? { lesson:{ id, title:'A lesson', text:'Source notes', concepts:['Core idea'] }, src:{ type:'text', text:'Source notes' } }
       : null,
     sourceReferenceContext:() => null,
+    mmss:seconds => `00:${String(Math.floor(seconds)).padStart(2,'0')}`,
     weakList:current => Object.values(current.concepts || {}),
     D:{ profile:{ level:'beginner', goalText:'Learn the topic' }, behaviour:{ answers:1, hints:0, confusions:0 } },
     MODE_BRIEF:{ mastery:'Mastery' },
@@ -63,6 +64,7 @@ function createHarness() {
     save:() => {}
   };
   loadAppFunction('function learnerCtx', 'const MODE_BRIEF', context);
+  loadAppFunction('function lessonSourceText', 'function sourceReferenceContext', context);
   loadAppFunction('function questionEvidenceWhy', 'function sourceReferenceContext', context);
   loadAppFunction('async function genAssignment', 'function questionEvidenceWhy', context);
   loadAppFunction('function newAssignment', 'function sourceForAttempt', context);
@@ -83,6 +85,97 @@ test('actual genAssignment validates generated questions and its output creates 
     assert.equal(assignment.submitted, false);
   }
   assert.equal(course.assignments.length, 3);
+});
+
+test('playlist lesson practice uses only that video’s saved transcript', async () => {
+  const { context, course } = createHarness();
+  const lesson = {
+    id:'playlist-lesson', title:'Actual playlist lesson', videoId:'video-id-1',
+    concepts:['Core idea']
+  };
+  course.sources.push({
+    id:'playlist-source', type:'playlist',
+    transcriptsByVideoId:{
+      'video-id-1':{
+        text:'The selected video defines the core idea.',
+        segments:[{ start:42, end:48, text:'The selected video defines the core idea.' }]
+      },
+      'video-id-2':{ text:'Do not include another video.' }
+    }
+  });
+  context.findLesson = () => lesson;
+  context.rawLesson = () => ({ lesson, src:course.sources[0] });
+  context.sourceReferenceContext = () => ({
+    type:'video',
+    segments:course.sources[0].transcriptsByVideoId['video-id-1'].segments
+  });
+  let prompt = '';
+  context.askJson = async value => {
+    prompt = value;
+    return { title:'Transcript practice', questions:[question({ sourceRef:{ type:'video', timestamp:44 } })] };
+  };
+  await context.genAssignment(course, { lessonId:lesson.id });
+  assert.match(prompt, /The selected video defines the core idea/);
+  assert.doesNotMatch(prompt, /Do not include another video/);
+  assert.match(prompt, /00:42/);
+});
+
+test('playlist lesson summaries use the selected video transcript', async () => {
+  const { context, course } = createHarness();
+  const lesson = {
+    id:'playlist-lesson', title:'Actual playlist lesson', videoId:'video-id-1',
+    concepts:['Core idea']
+  };
+  const source = {
+    type:'playlist',
+    transcriptsByVideoId:{
+      'video-id-1':{ text:'This video explains the core idea.' },
+      'video-id-2':{ text:'This belongs to a different video.' }
+    }
+  };
+  context.rawLesson = () => ({ lesson, src:source });
+  context.ask = async prompt => {
+    context.summaryPrompt = prompt;
+    return { text:'## Key points\n- Summary from the selected video.' };
+  };
+  loadAppFunction('function normalizeSummary', 'async function genRoadmap', context);
+  loadAppFunction('async function summarizeLesson', 'function normalizeSummary', context);
+  const summary = await context.summarizeLesson(course, lesson);
+  assert.match(summary, /Summary from the selected video/);
+  assert.match(context.summaryPrompt, /This video explains the core idea/);
+  assert.doesNotMatch(context.summaryPrompt, /This belongs to a different video/);
+});
+
+test('cloud autosave does not rerender and restart an active YouTube lesson', async () => {
+  const { context } = createHarness();
+  let rerenders = 0;
+  let noticeUpdates = 0;
+  context.AUTH = {
+    user:{ id:'student-1' }, recoveryKey:'recovery', cloudRevision:2,
+    syncStatus:'pending', syncError:''
+  };
+  context.localRevision = 3;
+  context.acknowledgedRevision = 2;
+  context.D = { courses:[], events:[] };
+  context.S = { view:'lesson' };
+  context.booted = true;
+  context.window.AdaptPracticeRecoveryStore = {
+    set:async () => {},
+    remove:async () => {}
+  };
+  context.window.AdaptPracticeSnapshotSync = {
+    canAcknowledgeSave:(saved,current,savedUser,currentUser) =>
+      saved === current && savedUser === currentUser
+  };
+  context.uploadSnapshot = async () => ({ revision:3 });
+  context.updateSyncNotice = () => { noticeUpdates++; };
+  context.render = () => { rerenders++; };
+  context.snapshotErrorMessage = error => error.message;
+  loadAppFunction('async function persistSnapshot', 'function flushSnapshotSave', context);
+  await context.persistSnapshot();
+  assert.equal(context.AUTH.syncStatus, 'saved');
+  assert.equal(rerenders, 0);
+  assert.equal(noticeUpdates, 1);
 });
 
 test('next assignment prompt includes real prior assignment answers and feedback', async () => {
