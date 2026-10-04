@@ -178,6 +178,32 @@ test('cloud autosave does not rerender and restart an active YouTube lesson', as
   assert.equal(noticeUpdates, 1);
 });
 
+test('snapshot uploads fall back to a revision-checked legacy write when chunk tables are missing', async () => {
+  const { context } = createHarness();
+  const requests = [];
+  context.crypto = { randomUUID:() => 'upload-id-12345678-1234-1234-1234-123456789012' };
+  context.authRequest = async (path, options) => {
+    requests.push({ path, options });
+    if (path === '/api/learner/snapshot/chunk') {
+      throw Object.assign(new Error('Chunked snapshot storage is not installed.'), {
+        code:'snapshot_migration_missing'
+      });
+    }
+    return { ok:true, legacy:true, revision:0, updatedAt:'2026-10-04T12:00:00Z' };
+  };
+  loadAppFunction('function snapshotStorageChunks', 'async function fetchSnapshot', context);
+  const snapshot = { profile:{ name:'Learner' }, courses:[{ id:'kept-course' }], events:[] };
+  const response = await context.uploadSnapshot(snapshot, 0, '2026-10-04T11:00:00Z');
+  assert.equal(response.legacy, true);
+  assert.deepEqual(requests.map(request => request.path), [
+    '/api/learner/snapshot/chunk',
+    '/api/learner/snapshot'
+  ]);
+  const fallback = JSON.parse(requests[1].options.body);
+  assert.equal(fallback.expectedUpdatedAt, '2026-10-04T11:00:00Z');
+  assert.equal(fallback.payload.courses[0].id, 'kept-course');
+});
+
 test('next assignment prompt includes real prior assignment answers and feedback', async () => {
   const { context, course } = createHarness();
   course.assignments.push({

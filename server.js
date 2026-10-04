@@ -101,6 +101,10 @@ function isMissingSupabaseRpc(error) {
   return ['PGRST202', '42883'].includes(String(error?.code || ''));
 }
 
+function isMissingSnapshotStorage(error) {
+  return ['PGRST202', 'PGRST205', '42P01', '42883'].includes(String(error?.code || ''));
+}
+
 function classifySignupFailure(error) {
   const message = String(error?.message || '').toLowerCase();
   const providerCode = String(error?.code || '').toLowerCase();
@@ -545,6 +549,7 @@ app.post('/api/learner/snapshot/chunk', authenticateRequest, asyncRoute(async (r
   const { error } = await req.userSupabase.from('learner_snapshot_uploads').upsert({
     user_id:req.user.id, upload_id:uploadId, chunk_index:index, chunk_count:count, content
   }, { onConflict:'user_id,upload_id,chunk_index' });
+  if (error && isMissingSnapshotStorage(error)) return bad(res, 503, 'Chunked snapshot storage is not installed.', 'snapshot_migration_missing');
   if (error) return bad(res, 503, 'Could not stage learning data. Apply the large-snapshot migration and retry.', 'database_unavailable');
   res.json({ ok:true, index });
 }));
@@ -561,6 +566,7 @@ app.post('/api/learner/snapshot/commit', authenticateRequest, asyncRoute(async (
     p_expected_revision:baseRevision,
     p_chunk_count:count
   });
+  if (error && isMissingSnapshotStorage(error)) return bad(res, 503, 'Chunked snapshot storage is not installed.', 'snapshot_migration_missing');
   if (error) return bad(res, 503, 'Could not commit learning data. Check the large-snapshot migration and retry.', 'database_unavailable');
   if (!data?.ok) return bad(res, 409, 'Learning data changed on another device. Synchronizing both versions.', 'snapshot_conflict');
   res.json({ ok:true, revision:Number(data.revision) });
@@ -570,9 +576,34 @@ app.put('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, res
   const payload = req.body?.payload;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return bad(res, 400, 'A learning snapshot object is required.', 'invalid_snapshot');
   if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > 3 * 1024 * 1024) return bad(res, 413, 'This legacy save endpoint accepts up to 3 MB. Use the chunked snapshot uploader.', 'snapshot_too_large');
-  const result = await req.userSupabase.from('learner_snapshots').upsert({ user_id:req.user.id, payload, updated_at:new Date().toISOString() }, { onConflict:'user_id' }).select('updated_at').single();
+  const snapshot = { user_id:req.user.id, payload, updated_at:new Date().toISOString() };
+  let result;
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'expectedUpdatedAt')) {
+    if (req.body.expectedUpdatedAt === null) {
+      result = await req.userSupabase.from('learner_snapshots').insert(snapshot).select('updated_at').maybeSingle();
+      if (result.error && String(result.error.code || '') === '23505') {
+        return bad(res, 409, 'Learning data changed on another device. Synchronizing both versions.', 'snapshot_conflict');
+      }
+    } else if (typeof req.body.expectedUpdatedAt === 'string' && req.body.expectedUpdatedAt) {
+      result = await req.userSupabase.from('learner_snapshots').update(snapshot)
+        .eq('user_id', req.user.id)
+        .eq('updated_at', req.body.expectedUpdatedAt)
+        .select('updated_at')
+        .maybeSingle();
+      if (!result.error && !result.data) {
+        return bad(res, 409, 'Learning data changed on another device. Synchronizing both versions.', 'snapshot_conflict');
+      }
+    } else {
+      return bad(res, 400, 'The expected snapshot version is invalid.', 'invalid_snapshot');
+    }
+  } else {
+    result = await req.userSupabase.from('learner_snapshots')
+      .upsert(snapshot, { onConflict:'user_id' })
+      .select('updated_at')
+      .single();
+  }
   if (result.error) return bad(res, 503, 'Could not save your learning data. Check that the database migration has been applied.', 'database_unavailable');
-  res.json({ ok:true, updatedAt:result.data.updated_at });
+  res.json({ ok:true, legacy:true, revision:0, updatedAt:result.data?.updated_at || snapshot.updated_at });
 }));
 
 app.get('/api/learner/export', authenticateRequest, asyncRoute(async (req, res) => {

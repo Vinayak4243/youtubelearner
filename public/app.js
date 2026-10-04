@@ -288,6 +288,7 @@ function authErrorMessage(error){
 }
 function snapshotErrorMessage(error){
   if (error?.code === 'snapshot_too_large') return 'Your learning history exceeds the supported account storage limit. Export a backup and contact support; no saved mistakes were deleted.';
+  if (error?.code === 'snapshot_migration_missing') return 'Large-snapshot storage is not installed. Your account copy is preserved locally; contact the site owner to apply the database migration.';
   if (error?.code === 'database_unavailable') return 'Cloud saving is unavailable. Your complete learning data remains in this account’s local recovery copy; retry after the database migration or service is restored.';
   if (error?.code === 'invalid_saved_snapshot') return 'The saved learning data could not be decoded. Your local recovery copy is preserved; contact support before retrying.';
   if (error?.code === 'snapshot_conflict') return 'Another device changed your learning data. Retry synchronization to merge both versions.';
@@ -318,21 +319,29 @@ function snapshotStorageChunks(text, maxBytes){
   if (chars.length || !chunks.length) chunks.push(chars.join(''));
   return chunks;
 }
-async function uploadSnapshot(payload, baseRevision){
+async function uploadSnapshot(payload, baseRevision, expectedUpdatedAt){
   const serialized = JSON.stringify(payload);
   const chunks = snapshotStorageChunks(serialized, 900 * 1024);
   if (chunks.length > 128) throw Object.assign(new Error('Your learning data is too large for the current account storage limit.'), { code:'snapshot_too_large' });
   const uploadId = (crypto.randomUUID ? crypto.randomUUID() : uid() + Date.now().toString(36) + uid()).replace(/-/g,'');
-  for (let index = 0; index < chunks.length; index++){
-    await authRequest('/api/learner/snapshot/chunk', {
+  try {
+    for (let index = 0; index < chunks.length; index++){
+      await authRequest('/api/learner/snapshot/chunk', {
+        method:'POST',
+        body:JSON.stringify({ uploadId, index, count:chunks.length, content:chunks[index] })
+      });
+    }
+    return await authRequest('/api/learner/snapshot/commit', {
       method:'POST',
-      body:JSON.stringify({ uploadId, index, count:chunks.length, content:chunks[index] })
+      body:JSON.stringify({ uploadId, count:chunks.length, baseRevision })
+    });
+  } catch(error) {
+    if (error.code !== 'snapshot_migration_missing') throw error;
+    return authRequest('/api/learner/snapshot', {
+      method:'PUT',
+      body:JSON.stringify({ payload, expectedUpdatedAt:expectedUpdatedAt ?? null })
     });
   }
-  return authRequest('/api/learner/snapshot/commit', {
-    method:'POST',
-    body:JSON.stringify({ uploadId, count:chunks.length, baseRevision })
-  });
 }
 async function fetchSnapshot(){
   const meta = await authRequest('/api/learner/snapshot');
@@ -370,6 +379,7 @@ async function restoreAuthenticatedUser(){
   }
   AUTH.recoveryKey = recoveryKey;
   AUTH.cloudRevision = Number(remote.revision) || 0;
+  AUTH.cloudUpdatedAt = remote.updatedAt || null;
   AUTH.hasCloudSnapshot = remote.hasSnapshot === true || Boolean(remote.snapshot);
   AUTH.cloudSnapshot = remote.snapshot ? normalizeSnapshot(remote.snapshot) : null;
   AUTH.localImportCounts = { courses:localSnapshot.courses.length, events:localSnapshot.events.length };
@@ -507,22 +517,26 @@ async function persistSnapshot(){
     await window.AdaptPracticeRecoveryStore.set(AUTH.recoveryKey, JSON.stringify(payload));
     let response;
     try {
-      response = await uploadSnapshot(payload, AUTH.cloudRevision);
+      response = await uploadSnapshot(payload, AUTH.cloudRevision, AUTH.cloudUpdatedAt);
     } catch(error) {
       if (error.code !== 'snapshot_conflict') throw error;
       const remote = await fetchSnapshot();
       if (AUTH.user?.id !== userId) return;
       AUTH.cloudRevision = Number(remote.revision) || 0;
+      AUTH.cloudUpdatedAt = remote.updatedAt || null;
       D = mergeSnapshots(remote.snapshot || blank(), mergeSnapshots(payload, D));
       localRevision++;
       revision = localRevision;
       payload = JSON.parse(JSON.stringify(D));
       try { localStorage.setItem(AUTH.recoveryKey, JSON.stringify(D)); } catch(storageError){}
       await window.AdaptPracticeRecoveryStore.set(AUTH.recoveryKey, JSON.stringify(D));
-      response = await uploadSnapshot(payload, AUTH.cloudRevision);
+      response = await uploadSnapshot(payload, AUTH.cloudRevision, AUTH.cloudUpdatedAt);
     }
     if (AUTH.user?.id !== userId) return;
-    AUTH.cloudRevision = Number(response.revision) || AUTH.cloudRevision + 1;
+    AUTH.cloudRevision = response.legacy
+      ? 0
+      : Number(response.revision) || AUTH.cloudRevision + 1;
+    AUTH.cloudUpdatedAt = response.updatedAt || AUTH.cloudUpdatedAt || null;
     acknowledgedRevision = revision;
     AUTH.syncError = '';
     if (window.AdaptPracticeSnapshotSync.canAcknowledgeSave(revision, localRevision, userId, AUTH.user.id)) {
@@ -574,9 +588,27 @@ async function finishLegacyImport(importData){
     const revision = ++localRevision;
     try { localStorage.setItem(AUTH.recoveryKey, JSON.stringify(D)); } catch(storageError){}
     await window.AdaptPracticeRecoveryStore.set(AUTH.recoveryKey, JSON.stringify(D));
-    const remote = await fetchSnapshot();
-    const saved = await uploadSnapshot(D, Number(remote.revision) || 0);
-    AUTH.cloudRevision = Number(saved.revision) || AUTH.cloudRevision;
+    let remote = await fetchSnapshot();
+    let saved;
+    try {
+      saved = await uploadSnapshot(D, Number(remote.revision) || 0, remote.updatedAt || null);
+    } catch(error) {
+      if (error.code !== 'snapshot_conflict') throw error;
+      remote = await fetchSnapshot();
+      if (!AUTH.user) return;
+      D = mergeSnapshots(remote.snapshot || blank(), D);
+      const merged = JSON.stringify(D);
+      const revisionAfterMerge = ++localRevision;
+      try { localStorage.setItem(AUTH.recoveryKey, merged); } catch(storageError){}
+      await window.AdaptPracticeRecoveryStore.set(AUTH.recoveryKey, merged);
+      saved = await uploadSnapshot(D, Number(remote.revision) || 0, remote.updatedAt || null);
+      if (revisionAfterMerge !== localRevision) {
+        AUTH.syncStatus = 'pending';
+        scheduleSnapshotSave();
+      }
+    }
+    AUTH.cloudRevision = saved.legacy ? 0 : Number(saved.revision) || AUTH.cloudRevision;
+    AUTH.cloudUpdatedAt = saved.updatedAt || remote.updatedAt || null;
     if (window.AdaptPracticeSnapshotSync.canAcknowledgeSave(revision, localRevision, AUTH.user.id, AUTH.user.id)){
       await window.AdaptPracticeRecoveryStore.remove(AUTH.recoveryKey);
       try { localStorage.removeItem(AUTH.recoveryKey); } catch(e){}
@@ -2348,7 +2380,10 @@ document.addEventListener('click', async e => {
     }
     case 'import-local': await finishLegacyImport(true); break;
     case 'start-fresh': await finishLegacyImport(false); break;
-    case 'sync-retry': await flushSnapshotSave(); break;
+    case 'sync-retry':
+      try { await flushSnapshotSave(); }
+      catch(error){ AUTH.error = snapshotErrorMessage(error); toast(AUTH.error, 6000); render(); }
+      break;
     case 'retry-enrichment': await retrySourceEnrichment(c, (c?.sources||[]).find(source => source.id === t.dataset.s)); break;
     case 'go': if (t.dataset.clear) { S.course = null; S.courseTab = 'overview'; } go(t.dataset.view); break;
     case 'history-page':

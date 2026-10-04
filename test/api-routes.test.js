@@ -17,6 +17,8 @@ let lastSnapshotWrite = null;
 let mockSnapshotRevision = 3;
 let missingSnapshotRpc = false;
 let missingAiRateLimitRpc = false;
+let missingSnapshotMigration = false;
+let legacySnapshotConflict = false;
 let youtubePageRequests = [];
 let youtubePlaylistStatus = 200;
 let refreshStatus = 200;
@@ -138,6 +140,12 @@ global.fetch = async (input, init) => {
       return new Response(JSON.stringify({ ok:true, revision:mockSnapshotRevision }), { status:200, headers:{'content-type':'application/json'} });
     }
     if (url.pathname.endsWith('/rest/v1/learner_snapshot_uploads')) {
+      if (missingSnapshotMigration) {
+        return new Response(JSON.stringify({
+          code:'PGRST205',
+          message:'Could not find the table public.learner_snapshot_uploads.'
+        }), { status:404, headers:{'content-type':'application/json'} });
+      }
       lastSnapshotWrite = { user_id:'user-1', ...JSON.parse(init.body) };
       return new Response(JSON.stringify([{ upload_id:lastSnapshotWrite.upload_id }]), { status:201, headers:{'content-type':'application/json'} });
     }
@@ -166,6 +174,13 @@ global.fetch = async (input, init) => {
       return new Response(JSON.stringify({ id: 'user-1', email: 'learner@example.test' }), { status: 200 });
     }
     if (url.pathname.endsWith('/rest/v1/learner_snapshots')) {
+      if (init.method === 'PATCH') {
+        lastSnapshotWrite = { user_id:'user-1', ...JSON.parse(init.body) };
+        assert.equal(url.searchParams.get('user_id'), 'eq.user-1');
+        if (legacySnapshotConflict) return new Response('[]', { status:200, headers:{'content-type':'application/json'} });
+        assert.equal(url.searchParams.get('updated_at'), 'eq.2026-10-04T11:00:00Z');
+        return new Response(JSON.stringify([{ updated_at:'2026-10-04T12:00:00Z' }]), { status:200, headers:{'content-type':'application/json'} });
+      }
       if (init.method === 'POST') {
         lastSnapshotWrite = JSON.parse(init.body);
         return new Response(JSON.stringify([{ updated_at: '2026-10-02T00:00:00Z' }]), { status: 201, headers: { 'content-type': 'application/json' } });
@@ -790,6 +805,49 @@ test('large snapshot chunks are stored under the authenticated account and commi
   assert.equal(commit.status, 200);
   assert.equal(lastSnapshotWrite.p_upload_id, uploadId);
   assert.equal(lastSnapshotWrite.p_expected_revision, expectedRevision);
+});
+
+test('missing chunk storage is reported explicitly so the client can use the legacy snapshot path', async () => {
+  missingSnapshotMigration = true;
+  try {
+    const response = await fetch(`${baseUrl}/api/learner/snapshot/chunk`, {
+      method:'POST',
+      headers:{ 'content-type':'application/json', authorization:'Bearer '+testAccessToken },
+      body:JSON.stringify({
+        uploadId:'snapshotupload0123456789',
+        index:0, count:1, content:JSON.stringify({ courses:[], events:[] })
+      })
+    });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).code, 'snapshot_migration_missing');
+  } finally {
+    missingSnapshotMigration = false;
+  }
+});
+
+test('legacy snapshot writes compare the previously loaded version and report concurrent changes', async () => {
+  const headers = { 'content-type':'application/json', authorization:'Bearer '+testAccessToken };
+  const payload = { profile:{ name:'Learner' }, courses:[], events:[] };
+  const response = await fetch(`${baseUrl}/api/learner/snapshot`, {
+    method:'PUT', headers,
+    body:JSON.stringify({ payload, expectedUpdatedAt:'2026-10-04T11:00:00Z' })
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).legacy, true);
+  assert.equal(lastSnapshotWrite.user_id, 'user-1');
+  assert.equal(lastSnapshotWrite.payload.profile.name, 'Learner');
+
+  legacySnapshotConflict = true;
+  try {
+    const conflict = await fetch(`${baseUrl}/api/learner/snapshot`, {
+      method:'PUT', headers,
+      body:JSON.stringify({ payload, expectedUpdatedAt:'2026-10-04T11:00:00Z' })
+    });
+    assert.equal(conflict.status, 409);
+    assert.equal((await conflict.json()).code, 'snapshot_conflict');
+  } finally {
+    legacySnapshotConflict = false;
+  }
 });
 
 test('snapshot chunk endpoint validates per-request payload size', async () => {
