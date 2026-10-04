@@ -855,10 +855,14 @@ function go(view, patch){
   window.scrollTo(0,0);
   render();
 }
-function openLessonTab(action, courseId, lessonId){
+function lessonTabUrl(action, courseId, lessonId){
   const url = new URL(location.href);
   url.hash = '';
   url.search = new URLSearchParams({ lessonTab:action, course:courseId, lesson:lessonId }).toString();
+  return url.toString();
+}
+function openLessonTab(action, courseId, lessonId){
+  const url = lessonTabUrl(action, courseId, lessonId);
   const tab = window.open(url.toString(), '_blank', 'noopener');
   if (!tab) toast('Your browser blocked the new tab. Allow pop-ups for AdaptPractice.');
 }
@@ -1430,7 +1434,7 @@ function vLesson(){
     + '<button class="btn sm" style="background:var(--pine);border-color:var(--pine)" data-act="toggle-done" data-c="'+c.id+'" data-l="'+lesson.id+'">'+(lesson.done?'Done ✓':'Mark done')+'</button></div></div>'
     + stage
     + '<div class="lesson-actions">'
-    + '<button class="btn go" data-act="open-lesson-tab" data-tab="practice" data-c="'+c.id+'" data-l="'+lesson.id+'">'+(a?'Practise again':'Practise this lesson')+' ↗</button>'
+    + '<a class="btn go" href="'+esc(lessonTabUrl('practice', c.id, lesson.id))+'" target="_blank" rel="noopener">'+(a?'Practise again':'Practise this lesson')+' ↗</a>'
     + '<button class="btn sec" data-act="confuse" data-c="'+c.id+'" data-l="'+lesson.id+'" title="Capture the current playback moment and ask for an explanation">I don\'t understand this</button>'
     + (watchUrl ? '<a class="btn ghost" href="'+esc(watchUrl)+'" target="_blank" rel="noopener">Watch on YouTube ↗</a>' : '')
     + '</div>'
@@ -1440,7 +1444,7 @@ function vLesson(){
         return '<span class="tag '+band+'">'+esc(k)+(cc&&cc.attempts?' '+pct(cc.mastery):'')+'</span>';
       }).join('')+'</div>' : '')
     + (lesson.summary ? '<div class="sheet pad md" style="margin-bottom:14px"><div class="between"><h3>Summary</h3><span class="tag">'+(hasSourceText?'Based on source text':'General knowledge — no transcript text')+'</span></div><div style="margin-top:8px;font-size:.9rem"><p>'+mdLite(lesson.summary)+'</p></div></div>'
-        : (SAMPLE ? '<button class="btn sec sm" data-act="open-lesson-tab" data-tab="summary" data-c="'+c.id+'" data-l="'+lesson.id+'" style="margin-bottom:14px">Summarise this lesson ↗</button>' : ''))
+        : (SAMPLE ? '<a class="btn sec sm" href="'+esc(lessonTabUrl('summary', c.id, lesson.id))+'" target="_blank" rel="noopener" style="margin-bottom:14px">Summarise this lesson ↗</a>' : ''))
     + '<div class="row between" style="margin-top:16px">'
     + (prev ? '<button class="btn sec sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+prev.id+'">← '+esc(prev.title.slice(0,28))+'</button>' : '<span></span>')
     + (next ? '<button class="btn sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+next.id+'">'+esc(next.title.slice(0,28))+' →</button>' : '<span></span>')
@@ -1464,7 +1468,7 @@ function vLesson(){
   else {
     pane += '<div class="practice-ready"><span class="pill">NEXT BEST ACTION</span><h3>Ready to practise?</h3><p>Build a short set from this lesson and the concepts you have been getting wrong.</p>'
       + '<div class="practice-meta"><span>5 questions</span><span>~10 minutes</span></div></div>'
-      + (SAMPLE ? '<button class="btn go" style="margin-top:12px;width:100%;min-height:42px" data-act="open-lesson-tab" data-tab="practice" data-c="'+c.id+'" data-l="'+lesson.id+'">Start practice ↗</button>'
+      + (SAMPLE ? '<a class="btn go" href="'+esc(lessonTabUrl('practice', c.id, lesson.id))+'" target="_blank" rel="noopener" style="margin-top:12px;width:100%;min-height:42px">Start practice ↗</a>'
                 : '<div class="note bad" style="margin-top:12px">The AI service is unavailable, so questions cannot be generated.</div>');
   }
   pane += '</aside>';
