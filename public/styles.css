@@ -180,8 +180,23 @@ th.n,td.n{text-align:right; font-variant-numeric:tabular-nums}
 .landgrid p{color:var(--onink-2); font-size:.88rem}
 
 /* ---------- lesson / focus ---------- */
-.lesson{display:grid; grid-template-columns:minmax(0,1.35fr) minmax(320px,.9fr); gap:0; min-height:100vh; background:var(--wash)}
-@media(max-width:1000px){.lesson{grid-template-columns:1fr}}
+.lesson{display:grid; grid-template-columns:minmax(0,1fr) minmax(230px,280px) minmax(320px,370px); gap:0; min-height:100vh; background:var(--wash)}
+.lesson-main{min-width:0; background:var(--wash)}
+.lesson-map{min-width:0; padding:18px 14px; background:var(--sheet); border-left:1px solid var(--rule); border-right:1px solid var(--rule); max-height:100vh; overflow-y:auto; position:sticky; top:0; align-self:start; height:100vh}
+.lesson-map-head{display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin-bottom:8px}
+.lesson-map-head strong{display:block; font-family:var(--serif); font-size:1.55rem; font-weight:500; line-height:1; margin-top:3px}
+.lesson-map .playlist{max-height:calc(100vh - 130px); overflow-y:auto; padding-right:3px}
+.lesson-map .playlist li{font-size:.78rem; padding:8px 7px; line-height:1.3}
+.lesson-map .playlist .lbl{min-width:0; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical}
+.lesson-actions{display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:12px 16px; background:var(--sheet); border-bottom:1px solid var(--rule);}
+.lesson-actions .btn{min-height:38px}
+.practice-ready{padding:18px; border:1px solid var(--rule); border-radius:var(--r); background:linear-gradient(145deg,var(--pine-soft),var(--sheet));}
+.practice-ready h3{margin:8px 0 6px}
+.practice-ready p{font-size:.86rem; color:var(--text-2); margin:0 0 14px}
+.practice-meta{display:flex; gap:8px; flex-wrap:wrap; font-size:.74rem; color:var(--pine); font-weight:600}
+.practice-meta span{padding:4px 8px; border-radius:999px; background:rgba(31,107,88,.1)}
+@media(max-width:1180px){.lesson{grid-template-columns:minmax(0,1fr) minmax(300px,360px)}.lesson-map{grid-column:1; grid-row:2; position:static; height:auto; max-height:260px; border:0; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule);}.lesson-map .playlist{max-height:170px}.lpane{grid-column:2; grid-row:1 / span 2;}}
+@media(max-width:1000px){.lesson{grid-template-columns:1fr}.lesson-map{grid-column:auto; grid-row:auto; order:3}.lesson-main{order:1}.lpane{grid-column:auto; grid-row:auto; order:2}}
 .stage{background:#000; position:relative; aspect-ratio:16/9; width:100%}
 .stage iframe{width:100%;height:100%;border:0;display:block}
 .stagefall{display:flex;align-items:center;justify-content:center;height:100%;color:#9aa;padding:24px;text-align:center;font-size:.85rem}

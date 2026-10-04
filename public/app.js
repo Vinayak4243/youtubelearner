@@ -1341,6 +1341,8 @@ function vLesson(){
   const listId = src.listId || ytListId(src.url);
   const selectedIndex = Number.isInteger(lesson.index) && lesson.index > 0 ? lesson.index : 1;
   const a = (c.assignments||[]).find(x => x.id === S.work);
+  const doneCount = list.filter(x => x.done).length;
+  const courseProgress = list.length ? Math.round((doneCount / list.length) * 100) : 0;
 
   let embedSrc = null;
   const common = 'rel=0&modestbranding=1&controls=1&enablejsapi=1&origin=' + encodeURIComponent(location.origin) + (lesson.at ? '&start='+Math.floor(lesson.at) : '') + '&playsinline=1';
@@ -1354,10 +1356,7 @@ function vLesson(){
 
   let stage;
   if (vid || (src.type === 'playlist' && listId)){
-    stage = '<div class="stage"><iframe id="ytframe" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" loading="lazy" src="'+esc(embedSrc)+'" onerror="this.style.display=\'none\'; var note=this.parentNode.parentNode.querySelector(\'#playnote\'); if(note){ note.classList.add(\'error\'); var txt=note.querySelector(\'span\'); if(txt){ txt.textContent=\'This video cannot be embedded in the current browser or network. Open it on YouTube instead.\'; } }"></iframe></div>'
-      + '<div class="playnote" id="playnote"><span>Tap the video to play. If playback is blocked here, watch it on YouTube.</span>'
-      + '<a class="btn sec sm" href="'+esc(watchUrl)+'" target="_blank" rel="noopener">Watch on YouTube</a>'
-      + '<span class="dim">Practice, the timestamp box and everything else on this page keep working.</span></div>';
+    stage = '<div class="stage"><iframe id="ytframe" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" loading="lazy" src="'+esc(embedSrc)+'"></iframe></div>';
   } else if (vid || (src.type === 'playlist' && listId)){
     const thumb = vid ? 'https://img.youtube.com/vi/' + vid + '/hqdefault.jpg' : 'https://img.youtube.com/vi/' + ytVideoId(src.url || '') + '/hqdefault.jpg';
     stage = '<div class="stage" style="display:flex;align-items:center;justify-content:center;padding:18px;background:linear-gradient(180deg, rgba(15,23,42,0.02), rgba(15,23,42,0.08));">'
@@ -1368,10 +1367,7 @@ function vLesson(){
       + '<h3 style="margin:10px 0 8px;">'+esc(lesson.title)+'</h3>'
       + '<p class="muted" style="margin:0 0 14px;">Your browser or network is blocking YouTube embeds. Open the video directly on YouTube to continue learning.</p>'
       + '<a class="btn" href="'+esc(watchUrl)+'" target="_blank" rel="noopener" style="display:inline-block;">Open lesson ' + (lesson.index||1) + ' on YouTube</a>'
-      + '</div></div></div>'
-      + '<div class="playnote" id="playnote"><span>The embedded player is blocked here, so this lesson opens directly on YouTube instead.</span>'
-      + '<a href="'+esc(watchUrl)+'" target="_blank" rel="noopener">Open lesson ' + (lesson.index||1) + ' on YouTube</a>'
-      + '<span class="dim">Practice, the timestamp box and everything else on this page still work normally.</span></div>';
+      + '</div></div></div>';
   } else if (src.type === 'pdf' || src.type === 'text'){
     const pageText = src.type === 'pdf'
       ? (src.pages || []).filter(page => !lesson.sourcePages?.length || lesson.sourcePages.includes(page.page))
@@ -1385,15 +1381,17 @@ function vLesson(){
     stage = '<div class="stage"><div class="stagefall">No playable link on this lesson — the playlist link did not contain a list id. Everything else on this page still works.</div></div>';
   }
 
-  let left = '<div style="min-width:0">'
+  let left = '<main class="lesson-main">'
     + '<div class="lbar"><div><div class="t" data-role="lesson-title">'+esc(lesson.title)+(lesson.auto ? ' <span class="dim" style="font-size:.7rem;color:var(--onink-2)">· fills in as it plays</span>' : '')+'</div><div class="s">'+esc(c.name)+' · lesson '+(i+1)+' of '+list.length+'</div></div>'
     + '<div class="row" style="margin-left:auto;gap:8px">'
     + '<button class="btn sec sm" style="border-color:var(--ink-3);color:var(--onink-2);background:transparent" data-act="close-lesson" data-c="'+c.id+'">Close</button>'
     + '<button class="btn sm" style="background:var(--pine);border-color:var(--pine)" data-act="toggle-done" data-c="'+c.id+'" data-l="'+lesson.id+'">'+(lesson.done?'Done ✓':'Mark done')+'</button></div></div>'
     + stage
-    + '<div style="padding:14px 16px;background:var(--sheet);border-bottom:1px solid var(--rule)">'
-    + '<div class="row"><button class="confuse" data-act="confuse" data-c="'+c.id+'" data-l="'+lesson.id+'">🤔 I don\'t understand this</button>'
-    + '<div class="dim" style="max-width:40ch">Press it while the idea is still on screen. The timestamp is captured and the explanation is written for that moment only.</div></div></div>'
+    + '<div class="lesson-actions">'
+    + '<button class="btn go" data-act="new-assign" data-c="'+c.id+'" data-l="'+lesson.id+'">'+(a?'Practise again':'Practise this lesson')+'</button>'
+    + '<button class="btn sec" data-act="confuse" data-c="'+c.id+'" data-l="'+lesson.id+'" title="Capture the current playback moment and ask for an explanation">I don\'t understand this</button>'
+    + (watchUrl ? '<a class="btn ghost" href="'+esc(watchUrl)+'" target="_blank" rel="noopener">Watch on YouTube ↗</a>' : '')
+    + '</div>'
     + '<div style="padding:16px">'
     + (lesson.concepts && lesson.concepts.length ? '<div class="row tiny" style="gap:6px;margin-bottom:14px">'+lesson.concepts.map(k => {
         const cc = c.concepts[k]; const band = cc ? ({high:'hi',medium:'md',low:'lo'}[prioBand(priority(cc))]) : '';
@@ -1401,13 +1399,18 @@ function vLesson(){
       }).join('')+'</div>' : '')
     + (lesson.summary ? '<div class="sheet pad md" style="margin-bottom:14px"><div class="between"><h3>Summary</h3><span class="tag">'+(hasSourceText?'Based on source text':'General knowledge — no transcript text')+'</span></div><div style="margin-top:8px;font-size:.9rem"><p>'+mdLite(lesson.summary)+'</p></div></div>'
         : (SAMPLE ? '<button class="btn sec sm" data-act="summarize" data-c="'+c.id+'" data-l="'+lesson.id+'" style="margin-bottom:14px">'+(S.busy==='summary'?'<span class="spin"></span> Reading…':'Summarise this lesson')+'</button>' : ''))
-    + '<div class="sheet pad"><h4 style="margin-bottom:8px">Course map</h4><ul class="playlist">'
-    + list.map(l => '<li data-act="open-lesson" data-c="'+c.id+'" data-l="'+l.id+'" data-lesson-li="'+l.id+'" aria-current="'+(l.id===lesson.id)+'"><span class="mk '+(l.done?'done':'')+'">'+(l.done?'✓':l.id===lesson.id?'▸':'○')+'</span><span class="lbl">'+esc(l.title)+'</span>'+(l.auto?' <span class="dim tiny">auto</span>':'')+'</li>').join('')
-    + '</ul></div>'
     + '<div class="row between" style="margin-top:16px">'
     + (prev ? '<button class="btn sec sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+prev.id+'">← '+esc(prev.title.slice(0,28))+'</button>' : '<span></span>')
     + (next ? '<button class="btn sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+next.id+'">'+esc(next.title.slice(0,28))+' →</button>' : '<span></span>')
-    + '</div></div></div>';
+    + '</div></div></main>';
+
+  const lessonMap = '<aside class="lesson-map">'
+    + '<div class="lesson-map-head"><div><span class="pill">COURSE PROGRESS</span><strong>'+courseProgress+'%</strong></div><span class="dim tiny">'+doneCount+' of '+list.length+' complete</span></div>'
+    + '<div class="bar" aria-label="Course progress"><i style="width:'+courseProgress+'%"></i></div>'
+    + '<div class="between" style="margin:20px 0 10px"><h3>Course map</h3><span class="dim tiny">'+list.length+' lessons</span></div>'
+    + '<ul class="playlist">'
+    + list.map(l => '<li data-act="open-lesson" data-c="'+c.id+'" data-l="'+l.id+'" data-lesson-li="'+l.id+'" aria-current="'+(l.id===lesson.id)+'"><span class="mk '+(l.done?'done':'')+'">'+(l.done?'✓':l.id===lesson.id?'▸':'○')+'</span><span class="lbl">'+esc(l.title)+'</span>'+(l.auto?' <span class="dim tiny">auto</span>':'')+'</li>').join('')
+    + '</ul></aside>';
 
   let pane = '<aside class="lpane">';
   pane += '<div class="between" style="margin-bottom:12px"><h3>Practice</h3>'
@@ -1416,12 +1419,13 @@ function vLesson(){
   if (a){ pane += assignmentHtml(c, a, true); }
   else if (S.busy === 'assign'){ pane += '<div class="think"><span class="spin"></span> Writing questions from this lesson and your last mistakes…</div>'; }
   else {
-    pane += '<div class="note">Questions are written from this lesson, your goal, and the concepts you have been getting wrong. Nothing here is random.</div>'
-      + (SAMPLE ? '<button class="btn go" style="margin-top:14px;width:100%" data-act="new-assign" data-c="'+c.id+'" data-l="'+lesson.id+'">Practise this lesson</button>'
+    pane += '<div class="practice-ready"><span class="pill">NEXT BEST ACTION</span><h3>Ready to practise?</h3><p>Build a short set from this lesson and the concepts you have been getting wrong.</p>'
+      + '<div class="practice-meta"><span>5 questions</span><span>~10 minutes</span></div></div>'
+      + (SAMPLE ? '<button class="btn go" style="margin-top:12px;width:100%;min-height:42px" data-act="new-assign" data-c="'+c.id+'" data-l="'+lesson.id+'">Start practice</button>'
                 : '<div class="note bad" style="margin-top:12px">The AI service is unavailable, so questions cannot be generated.</div>');
   }
   pane += '</aside>';
-  return '<div class="lesson">' + left + pane + '</div>' + (S.modal || '');
+  return '<div class="lesson">' + left + lessonMap + pane + '</div>' + (S.modal || '');
 }
 function explainBlock(){
   const x = S.explain;
