@@ -2,11 +2,12 @@ const assert = require('node:assert/strict');
 const { after, before, test } = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
-const { getSupabaseConfig } = require('../server/auth');
+const { getSupabaseConfig, sessionCookies } = require('../server/auth');
 
 process.env.GEMINI_API_KEY = 'test-server-key';
 process.env.GEMINI_MODEL = 'test-model';
 process.env.YOUTUBE_API_KEY = 'test-youtube-key';
+process.env.OPENAI_API_KEY = '';
 process.env.SUPABASE_URL = 'https://supabase.test';
 process.env.SUPABASE_ANON_KEY = 'test-anon-key';
 const nativeFetch = global.fetch;
@@ -15,6 +16,12 @@ let providerStreamBody = 'data: {"candidates":[{"content":{"parts":[{"text":"str
 let lastSnapshotWrite = null;
 let youtubePageRequests = [];
 let youtubePlaylistStatus = 200;
+let refreshStatus = 200;
+let refreshRequestCount = 0;
+let signupRedirectTo = '';
+let recoveryRedirectTo = '';
+let generatedResponseMimeTypes = [];
+let generationFailure = null;
 const testAccessToken = [
   Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url'),
   Buffer.from(JSON.stringify({ sub:'user-1', exp:Math.floor(Date.now() / 1000) + 3600 })).toString('base64url'),
@@ -67,9 +74,14 @@ global.fetch = async (input, init) => {
   if (url.hostname === 'supabase.test') {
     if (url.pathname.endsWith('/auth/v1/signup')) {
       assert.equal(new Headers(init.headers).get('apikey'), process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY);
+      signupRedirectTo = url.searchParams.get('redirect_to') || '';
       return new Response(JSON.stringify(signupResponse.body), { status:signupResponse.status, headers:{'content-type':'application/json'} });
     }
     if (url.pathname.endsWith('/auth/v1/token')) {
+      if (url.searchParams.get('grant_type') === 'refresh_token') {
+        refreshRequestCount++;
+        if (refreshStatus !== 200) return new Response(JSON.stringify({ code:'refresh_token_not_found', msg:'Invalid refresh token' }), { status:refreshStatus, headers:{'content-type':'application/json'} });
+      }
       return new Response(JSON.stringify({
         access_token:testAccessToken,
         refresh_token:'test-refresh-token',
@@ -78,7 +90,17 @@ global.fetch = async (input, init) => {
         user:{ id:'user-1', email:'learner@example.test' }
       }), { status:200, headers:{'content-type':'application/json'} });
     }
-    if (url.pathname.endsWith('/auth/v1/recover') || url.pathname.endsWith('/auth/v1/logout')) {
+    if (url.pathname.endsWith('/auth/v1/recover')) {
+      recoveryRedirectTo = url.searchParams.get('redirect_to') || '';
+      return new Response('{}', { status:200, headers:{'content-type':'application/json'} });
+    }
+    if (url.pathname.endsWith('/auth/v1/verify')) {
+      return new Response(JSON.stringify({
+        access_token:testAccessToken, refresh_token:'test-refresh-token', expires_in:3600,
+        token_type:'bearer', user:{ id:'user-1', email:'learner@example.test' }
+      }), { status:200, headers:{'content-type':'application/json'} });
+    }
+    if (url.pathname.endsWith('/auth/v1/logout')) {
       return new Response('{}', { status:200, headers:{'content-type':'application/json'} });
     }
     if (url.pathname.endsWith('/rest/v1/rpc/consume_user_ai_rate_limit')) return new Response('true', { status:200, headers:{'content-type':'application/json'} });
@@ -107,13 +129,26 @@ global.fetch = async (input, init) => {
     throw new Error(`Unexpected Supabase request: ${url.pathname}`);
   }
   if (url.hostname !== 'generativelanguage.googleapis.com') return nativeFetch(input, init);
+  if (url.pathname.endsWith('/models')) {
+    return new Response(JSON.stringify({
+      models:[
+        { name:'models/test-model', supportedGenerationMethods:['generateContent'] },
+        { name:'models/not-a-generator', supportedGenerationMethods:['embedContent'] }
+      ]
+    }), { status:200, headers:{ 'content-type':'application/json' } });
+  }
   if (url.pathname.endsWith(':countTokens')) {
     return new Response(providerStatus.body, { status: providerStatus.status });
   }
   const payload = JSON.parse(init.body);
+  generatedResponseMimeTypes.push(payload.generationConfig?.responseMimeType || null);
   assert.equal(payload.contents[0].parts[0].text.includes('test prompt'), true);
   assert.equal(new URL(url).searchParams.has('key'), false);
   assert.equal(new Headers(init.headers).get('x-goog-api-key'), 'test-server-key');
+  if (generationFailure?.timeout) throw Object.assign(new Error('simulated provider timeout'), { name:'TimeoutError' });
+  if (generationFailure) {
+    return new Response(JSON.stringify(generationFailure.body), { status:generationFailure.status, headers:{'content-type':'application/json'} });
+  }
   if (url.pathname.endsWith(':streamGenerateContent')) {
     return new Response(providerStreamBody, { status: 200, headers: { 'content-type': 'text/event-stream' } });
   }
@@ -155,7 +190,61 @@ test('provider credential failures do not make the API service unavailable', asy
   assert.equal(body.code, 'invalid_api_key');
 });
 
+test('missing access cookie refreshes the Supabase session from the refresh cookie', async () => {
+  refreshStatus = 200;
+  const previousCount = refreshRequestCount;
+  const response = await fetch(`${baseUrl}/api/auth/session`, {
+    headers:{ cookie:'ap_refresh=test-refresh-token', 'x-forwarded-for':'198.51.100.11' }
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.user.id, 'user-1');
+  assert.equal(refreshRequestCount, previousCount + 1);
+  assert.match(response.headers.get('set-cookie') || '', /ap_access=.*HttpOnly/);
+  assert.match(response.headers.get('set-cookie') || '', /ap_refresh=.*HttpOnly/);
+});
+
+test('logout revokes and clears a session restored from a refresh cookie alone', async () => {
+  const response = await fetch(`${baseUrl}/api/auth/logout`, {
+    method:'POST',
+    headers:{ 'content-type':'application/json', cookie:'ap_refresh=test-refresh-token', 'x-forwarded-for':'198.51.100.12' },
+    body:'{}'
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ok, true);
+  assert.match(response.headers.get('set-cookie') || '', /Max-Age=0/);
+});
+
+test('invalid refresh cookies are cleared and return a JSON expired-session response', async () => {
+  refreshStatus = 400;
+  try {
+    const response = await fetch(`${baseUrl}/api/auth/session`, {
+      headers:{ cookie:'ap_refresh=invalid-refresh-token', 'x-forwarded-for':'198.51.100.13' }
+    });
+    const body = await response.json();
+    assert.equal(response.status, 401);
+    assert.equal(body.code, 'session_expired');
+    assert.match(response.headers.get('content-type') || '', /application\/json/);
+    assert.match(response.headers.get('set-cookie') || '', /Max-Age=0/);
+  } finally {
+    refreshStatus = 200;
+  }
+});
+
+test('production session cookies retain HttpOnly, SameSite and Secure attributes', () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  try {
+    assert.ok(sessionCookies({ access_token:'access', refresh_token:'refresh', expires_in:3600 })
+      .every(cookie => /HttpOnly/.test(cookie) && /SameSite=Lax/.test(cookie) && /; Secure/.test(cookie)));
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
+});
+
 test('AI provider credentials come only from the server environment', async () => {
+  generatedResponseMimeTypes = [];
   const response = await fetch(`${baseUrl}/api/ai/json`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer valid-user-token', 'x-api-key': 'client-supplied-key' },
@@ -163,6 +252,49 @@ test('AI provider credentials come only from the server environment', async () =
   });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
+  assert.equal(generatedResponseMimeTypes[0], 'application/json');
+  const responseText = await fetch(`${baseUrl}/api/ai/text`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization:`Bearer ${testAccessToken}` },
+    body: JSON.stringify({ prompt: 'test prompt' })
+  });
+  assert.equal(responseText.status, 200, await responseText.clone().text());
+  assert.deepEqual(await responseText.json(), { text:'{"ok":true}' });
+  assert.equal(generatedResponseMimeTypes[1], null);
+});
+
+test('Gemini quota failures identify the provider and return a quota response', async () => {
+  generationFailure = { status:429, body:{ error:{ message:'Quota exceeded for this model.' } } };
+  try {
+    const response = await fetch(`${baseUrl}/api/ai/text`, {
+      method:'POST',
+      headers:{ 'content-type':'application/json', authorization:`Bearer ${testAccessToken}` },
+      body:JSON.stringify({ prompt:'test prompt' })
+    });
+    const body = await response.json();
+    assert.equal(response.status, 402);
+    assert.equal(body.code, 'credits_exhausted');
+    assert.match(body.error, /Gemini quota or credits/);
+  } finally {
+    generationFailure = null;
+  }
+});
+
+test('Gemini timeouts are reported as provider timeouts with retry guidance', async () => {
+  generationFailure = { timeout:true };
+  try {
+    const response = await fetch(`${baseUrl}/api/ai/text`, {
+      method:'POST',
+      headers:{ 'content-type':'application/json', authorization:`Bearer ${testAccessToken}` },
+      body:JSON.stringify({ prompt:'test prompt' })
+    });
+    const body = await response.json();
+    assert.equal(response.status, 504);
+    assert.equal(body.code, 'provider_timeout');
+    assert.match(body.error, /Gemini request timed out/);
+  } finally {
+    generationFailure = null;
+  }
 });
 
 test('AI streaming returns provider deltas before the response completes', async () => {
@@ -230,7 +362,28 @@ test('video metadata route returns metadata separately from transcript availabil
 
 test('browser loads source parsing helpers before application code', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   assert.ok(html.indexOf('src="source-context.js"') < html.indexOf('src="app.js"'));
+  assert.ok(html.indexOf('src="course-map.js"') < html.indexOf('src="app.js"'));
+  assert.ok(html.indexOf('src="snapshot-merge.js"') < html.indexOf('src="app.js"'));
+  const pdfVersion = html.match(/pdf\.js\/([\d.]+)\/pdf\.min\.js/)?.[1];
+  const workerVersion = app.match(/pdf\.js\/([\d.]+)\/pdf\.worker\.min\.js/)?.[1];
+  assert.ok(pdfVersion);
+  assert.equal(workerVersion, pdfVersion);
+});
+
+test('Express serves the repaired public frontend and shared validator before app.js', async () => {
+  const htmlResponse = await fetch(`${baseUrl}/`);
+  const html = await htmlResponse.text();
+  const appResponse = await fetch(`${baseUrl}/app.js`);
+  const appSource = await appResponse.text();
+  assert.equal(htmlResponse.status, 200);
+  assert.equal(appResponse.status, 200);
+  assert.ok(html.indexOf('src="course-map.js"') < html.indexOf('src="app.js"'));
+  const validatorPosition = appSource.indexOf('function validateCourseMap(output, wizard)');
+  const builderPosition = appSource.indexOf('async function buildCourse(w)');
+  assert.ok(validatorPosition >= 0 && validatorPosition < builderPosition);
+  assert.match(appSource, /AdaptPracticeCourseMap\.confirmSourceImport\(w/);
 });
 
 test('Vercel has explicit function entry points for nested AI endpoints', () => {
@@ -296,7 +449,9 @@ test('Auth config accepts the Supabase publishable key without exposing it', asy
 
 test('signup with confirmation required returns success without creating a session cookie', async () => {
   const originalPublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY;
+  const originalSiteUrl = process.env.AUTH_SITE_URL;
   process.env.SUPABASE_PUBLISHABLE_KEY = 'test-publishable-key';
+  process.env.AUTH_SITE_URL = 'https://students.example.test';
   try {
     const response = await fetch(`${baseUrl}/api/auth/signup`, {
       method:'POST',
@@ -308,13 +463,18 @@ test('signup with confirmation required returns success without creating a sessi
     assert.equal(body.confirmationRequired, true);
     assert.equal(body.user.email, 'new-learner@example.test');
     assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(signupRedirectTo, 'https://students.example.test/?auth=verify');
   } finally {
     if (originalPublishableKey === undefined) delete process.env.SUPABASE_PUBLISHABLE_KEY;
     else process.env.SUPABASE_PUBLISHABLE_KEY = originalPublishableKey;
+    if (originalSiteUrl === undefined) delete process.env.AUTH_SITE_URL;
+    else process.env.AUTH_SITE_URL = originalSiteUrl;
   }
 });
 
 test('mocked authentication supports sign-in, sign-out, recovery email and password update', async () => {
+  const previousSiteUrl = process.env.AUTH_SITE_URL;
+  process.env.AUTH_SITE_URL = 'https://students.example.test';
   const login = await fetch(`${baseUrl}/api/auth/login`, {
     method:'POST',
     headers:{ 'content-type':'application/json' },
@@ -330,11 +490,23 @@ test('mocked authentication supports sign-in, sign-out, recovery email and passw
     body:JSON.stringify({ email:'learner@example.test' })
   });
   assert.equal(recovery.status, 200);
+  assert.equal(recoveryRedirectTo, 'https://students.example.test/?auth=reset');
 
   const passwordUpdate = await fetch(`${baseUrl}/api/auth/reset-password`, {
     method:'POST',
     headers:{ 'content-type':'application/json', authorization:`Bearer ${testAccessToken}`, cookie:`ap_access=${testAccessToken}; ap_refresh=test-refresh-token` },
     body:JSON.stringify({ password:'updated-test-password' })
+  });
+
+  test('email confirmation exchanges a one-time token for a secure app session', async () => {
+    const response = await fetch(`${baseUrl}/api/auth/verify`, {
+      method:'POST',
+      headers:{ 'content-type':'application/json' },
+      body:JSON.stringify({ token_hash:'valid-test-hash', type:'signup' })
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).user.id, 'user-1');
+    assert.match(response.headers.get('set-cookie') || '', /ap_refresh=.*HttpOnly/);
   });
   assert.equal(passwordUpdate.status, 200, await passwordUpdate.clone().text());
 
@@ -345,6 +517,8 @@ test('mocked authentication supports sign-in, sign-out, recovery email and passw
   });
   assert.equal(logout.status, 200);
   assert.match(logout.headers.get('set-cookie') || '', /Max-Age=0/);
+  if (previousSiteUrl === undefined) delete process.env.AUTH_SITE_URL;
+  else process.env.AUTH_SITE_URL = previousSiteUrl;
 });
 
 test('signup database failures return a sanitized error and log only safe diagnostics', async () => {
@@ -417,6 +591,13 @@ test('snapshot reads require an authenticated user', async () => {
   const response = await fetch(`${baseUrl}/api/learner/snapshot`);
   assert.equal(response.status, 401);
   assert.equal((await response.json()).code, 'not_authenticated');
+});
+
+test('unknown API paths return JSON rather than the SPA HTML page', async () => {
+  const response = await fetch(`${baseUrl}/api/not-a-real-endpoint`);
+  assert.equal(response.status, 404);
+  assert.match(response.headers.get('content-type') || '', /application\/json/);
+  assert.equal((await response.json()).code, 'not_found');
 });
 
 test('authenticated users read only the RLS-scoped snapshot client', async () => {

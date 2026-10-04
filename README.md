@@ -7,6 +7,7 @@ AdaptPractice turns YouTube lessons and PDFs into interactive courses. It genera
 
 - **Source-based courses**: Build a course from YouTube videos, playlists, PDFs, or pasted notes.
 - **Dynamic Concept Tracking**: The system doesn't just track "completion"; it tracks **mastery**. It uses a custom algorithm to determine if a student is "learning," "improving," or has "mastered" a specific concept.
+- **Weakness Matrix**: Keeps a separate record for every answer attempt, including mistakes, feedback, hints, timing, and available lesson/PDF/video references. Correct practice updates mastery without removing earlier mistakes; records sync with the learner's private account snapshot.
 - **AI-Generated Assignments**: Automatically creates Multiple Choice (MCQ), True/False, and short-answer questions based on the course material.
 - **Personalized Explanations**: Ask for help at a video timestamp using the available transcript context.
 - **AI providers**: Google Gemini is the default; OpenAI is an optional provider fallback.
@@ -65,14 +66,19 @@ Set `AUTH_SITE_URL` to the canonical site origin, with no trailing slash. For
 the production deployment, use:
 
 ```env
-AUTH_SITE_URL=https://youtubelearner-five.vercel.app
+AUTH_SITE_URL=https://youtubelearner-86uk4d24t-vinayak-0a57.vercel.app
 ```
 
 In Vercel, add `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and
 `AUTH_SITE_URL` under **Project → Settings → Environment Variables** for every
-environment that should support accounts, then redeploy. In Supabase, enable
+environment that should support accounts, then redeploy. `AUTH_SITE_URL` must
+be the student-facing canonical origin, with no trailing slash. For the
+deployment URL currently shared with this project, set it to
+`https://youtubelearner-86uk4d24t-vinayak-0a57.vercel.app`. In Supabase, enable
 the **Email** auth provider, set the Site URL to the same origin, and add
-`https://youtubelearner-five.vercel.app/**` to the allowed redirect URLs.
+`https://youtubelearner-86uk4d24t-vinayak-0a57.vercel.app/**` to the allowed
+redirect URLs. If using a custom domain, use that exact origin in all three
+places instead.
 The app returns from email confirmation at `/?auth=verify` and password reset
 at `/?auth=reset`.
 The account screens have their own refreshable hash routes:
@@ -96,7 +102,10 @@ enabled before testing account data sync.
   `SUPABASE_PUBLISHABLE_KEY`.
 - At least one AI provider is required: `GEMINI_API_KEY` (default) or
   `OPENAI_API_KEY`. Optional model settings are `GEMINI_MODEL`,
-  `GEMINI_FALLBACK_MODEL`, and `GPT_MODEL`.
+  `GEMINI_FALLBACK_MODEL`, and `GPT_MODEL`. With no Gemini model explicitly
+  configured, the server selects from models advertised by the Gemini API that
+  support content generation. Configured names are checked against that live
+  model list; do not copy an unverified model name from an example.
 - Required for automated YouTube playlist/video metadata: `YOUTUBE_API_KEY`.
   The key is read only by the server; Vercel does not use a local `yt-dlp`
   executable.
@@ -114,6 +123,14 @@ This repository's Vercel configuration uses platform auto-detection; the app
 runtime is Node.js 24. After deployment, check `/api/health` for provider
 readiness. A successful health check does not replace an authenticated,
 end-to-end learning-flow test.
+
+The shared deployment URL currently redirects to Vercel Login because Vercel
+Deployment Protection is enabled. To make a student-facing production URL
+public, either assign and use a custom domain excluded by the current
+`all_except_custom_domains` protection scope, or disable Vercel Authentication
+for the Production deployment in **Project → Settings → Deployment Protection**.
+Do not disable Supabase authentication: Supabase continues to protect accounts
+and private student data independently.
 
 PDF extraction reads selectable text; scanned image-only PDFs are not OCRed.
 Video explanations and question citations require usable transcript segments.

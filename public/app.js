@@ -235,19 +235,7 @@ function hasLearningData(snapshot){
   return Boolean(snapshot && (snapshot.profile || snapshot.courses.length || snapshot.events.length));
 }
 function mergeSnapshots(cloudSnapshot, localSnapshot){
-  const merged = normalizeSnapshot(cloudSnapshot);
-  const courseIds = new Set(merged.courses.map(course => course.id));
-  for (const course of normalizeSnapshot(localSnapshot).courses){
-    if (!course.id || courseIds.has(course.id)) continue;
-    merged.courses.push(course); courseIds.add(course.id);
-  }
-  const eventIds = new Set(merged.events.map(event => event.id));
-  for (const event of normalizeSnapshot(localSnapshot).events){
-    if (event.id && !eventIds.has(event.id)){ merged.events.push(event); eventIds.add(event.id); }
-  }
-  if (!merged.profile) merged.profile = normalizeSnapshot(localSnapshot).profile;
-  merged.behaviour = merged.behaviour || normalizeSnapshot(localSnapshot).behaviour;
-  return merged;
+  return normalizeSnapshot(window.AdaptPracticeSnapshotMerge.mergeSnapshots(cloudSnapshot, localSnapshot));
 }
 async function restoreAuthenticatedUser(){
   const session = await authRequest('/api/auth/session');
@@ -445,7 +433,7 @@ async function fetchVideoMetadata(url){
 
 const AI_COPY = {
   not_granted:'The AI backend is not reachable. Check server configuration and try again.',
-  missing_api_key:'AI is not configured. Add GEMINI_API_KEY in the server environment and redeploy.',
+  missing_api_key:'No AI provider is configured. Add a provider API key to the server environment and redeploy.',
   sampling_disabled:'AI is not available on this account.',
   not_declared:'This page no longer has AI access.',
   capability_disabled:'AI is unavailable in this view.',
@@ -453,7 +441,7 @@ const AI_COPY = {
   rate_limited:'Too many AI requests. Wait a minute and try again.',
   credits_exhausted:'Your Gemini API quota or credit is exhausted. Check Google AI Studio billing and quota, then retry.',
   invalid_api_key:'Gemini rejected the server credential. Replace GEMINI_API_KEY with a Google AI Studio API key, then redeploy.',
-  invalid_model:'The Gemini model is unavailable. Set GEMINI_MODEL to a supported model such as gemini-3.5-flash, then restart or redeploy.',
+  invalid_model:'The configured AI model is unavailable. Check the model name against the provider’s available models.',
   provider_overloaded:'The AI provider is temporarily overloaded. Please retry in a moment.',
   provider_unavailable:'The AI provider is unavailable. Check its status and retry.',
   session_expired:'Sign in to your AI provider again, then retry.',
@@ -534,26 +522,14 @@ function conceptOf(course, name){
   const k = String(name||'General').trim();
   if (!course.concepts[k]) course.concepts[k] = {
     name:k, mastery:35, attempts:0, correct:0, errors:0, hints:0, confusion:0,
-    status:'new', source:null, lastSeen:0, history:[], errorTypes:{}
+    status:'new', source:null, lastSeen:0, history:[], attemptHistory:[], errorTypes:{}
   };
   return course.concepts[k];
 }
 /* Evidence-based update. One mistake is a signal, not a diagnosis. */
-function recordAttempt(course, name, res){
-  const c = conceptOf(course, name);
-  c.attempts++; c.lastSeen = now();
-  if (res.hint) c.hints++;
-  const m = c.mastery;
-  if (res.verdict === 'correct'){ c.correct++; c.mastery = m + (res.hint ? (80-m)*0.14 : (94-m)*0.30); }
-  else if (res.verdict === 'partial'){ c.errors += 0.5; c.mastery = m + (68-m)*0.10; }
-  else { c.errors++; c.mastery = Math.max(3, m*0.78 - 2); }
-  c.mastery = clamp(Math.round(c.mastery), 0, 100);
-  if (res.errorType && res.verdict !== 'correct') c.errorTypes[res.errorType] = (c.errorTypes[res.errorType]||0) + 1;
-  if (res.source) c.source = res.source;
-  c.history.push({ t:now(), v:res.verdict, m:c.mastery, d:res.difficulty||'medium' });
-  if (c.history.length > 40) c.history.shift();
-  restatus(c);
-  return c;
+function recordAttempt(course, name, res, attemptRecord){
+  conceptOf(course, name);
+  return window.AdaptPracticeWeaknessMatrix.recordConceptAttempt(course, name, res, attemptRecord);
 }
 function restatus(c){
   const prev = c.status;
@@ -599,7 +575,7 @@ function rawLesson(course, id){
 const getCourse = id => D.courses.find(c => c.id === id);
 
 /* ---------- router ---------- */
-const S = { view:'landing', course:null, lesson:null, work:null, busy:'', apiError:'', modal:null, wizard:null, session:null, courseTab:'overview', courseSearch:'' };
+const S = { view:'landing', course:null, lesson:null, work:null, busy:'', apiError:'', modal:null, wizard:null, session:null, courseTab:'overview', courseSearch:'', weakTopic:null };
 function updateAuthLocation(mode, replace){
   const hash = mode ? window.AdaptPracticeAuthRoutes.hashForMode(mode) : '';
   const url = location.pathname + location.search + hash;
@@ -673,7 +649,7 @@ function render(){
     app.innerHTML = apiNotice + vLesson(); ytHandshake(); return;
   }
   const f = D.settings.focus;
-  const syncNotice = AUTH.syncStatus === 'error' ? '<div class="note bad" role="alert" style="margin-bottom:14px">'+esc(AUTH.syncError||'Your learning data could not be saved to your account.')+' <button class="btn sec sm" data-act="sync-retry">Retry save</button></div>' : AUTH.syncStatus === 'pending' ? '<div class="dim tiny" role="status" style="margin-bottom:10px">Saving to your account…</div>' : '';
+  const syncNotice = AUTH.syncStatus === 'error' ? '<div class="note bad" role="alert" style="margin-bottom:14px">'+esc(AUTH.syncError||'Your learning data could not be saved to your account.')+' Your device copy is retained. <button class="btn sec sm" data-act="sync-retry">Retry save</button></div>' : AUTH.syncStatus === 'pending' ? '<div class="dim tiny" role="status" style="margin-bottom:10px">Saved on this device; syncing to your account…</div>' : AUTH.user && AUTH.syncStatus === 'saved' ? '<div class="dim tiny" role="status" style="margin-bottom:10px">Changes saved to your account.</div>' : '';
   const apiNotice = S.apiError ? '<div class="note bad" role="alert" style="margin-bottom:14px">'+esc(S.apiError)+'</div>' : '';
   app.innerHTML = '<div class="shell' + (f?' focus':'') + '">' + (f ? '' : rail()) + '<main class="main">' + (f ? focusExit() : '') + syncNotice + apiNotice + body() + '</main></div>' + (S.modal || '');
   if (S.modal) { const ta = document.querySelector('.modal textarea, .modal input'); if (ta) ta.focus(); }
@@ -710,7 +686,7 @@ function rail(){
     '<button class="nav" data-act="go" data-view="'+v+'" aria-current="'+(S.view===v)+'"><span class="g">'+g+'</span><span class="label">'+label+'</span>'+
     (count ? '<span class="ct">'+count+'</span>' : '') + '</button>';
   const statusText = !aiChecked ? 'Checking AI' : AI_STATUS.ready ? 'AI ready' : AI_STATUS.service === 'available' ? 'AI setup needed' : 'AI offline';
-  const moreViews = ['shield','profile'];
+  const moreViews = ['weakness','shield','profile'];
   return '<nav class="rail">'
     + '<div class="brand" data-act="go" data-view="dash"><b>AdaptPractice</b><i>BETA</i></div>'
     + item('dash','◇','Dashboard')
@@ -718,13 +694,14 @@ function rail(){
     + item('work','✎','Practice')
     + item('revision','↻','Revision')
     + item('progress','▦','Progress')
+    + item('weakness','▦','Weakness Matrix',due||null)
     + '<div class="railsep"></div>'
     + item('shield','⛨','Focus shield')
     + item('profile','◉','Profile')
     + '<button class="nav" data-act="logout"><span class="g">↪</span><span class="label">Sign out</span></button>'
     + '<div class="railfoot"><span class="live-pill"><span class="live-dot"></span>' + statusText + '</span><br>' + (AI_STATUS.ready ? esc(AI_STATUS.provider + ' · ' + AI_STATUS.model) : aiChecked ? esc(AI_COPY[AI_STATUS.code] || 'Configure the server-side AI provider.') : 'Checking provider and model…') + '</div>'
     + '<details class="mobile-more"><summary class="nav" aria-label="More sections"><span class="g">•••</span><span class="label">More</span></summary>'
-    + '<div class="mobile-menu">' + moreViews.map(v => item(v, ({shield:'⛨',profile:'◉'})[v], ({shield:'Focus shield',profile:'Profile'})[v])).join('')
+    + '<div class="mobile-menu">' + moreViews.map(v => item(v, ({weakness:'▦',shield:'⛨',profile:'◉'})[v], ({weakness:'Weakness Matrix',shield:'Focus shield',profile:'Profile'})[v])).join('')
     + '<button class="nav" data-act="logout"><span class="g">↪</span><span class="label">Sign out</span></button></div></details>'
     + '</nav>';
 }
@@ -781,7 +758,7 @@ function vAuth(){
 function vImport(){
   const counts = AUTH.localImportCounts || { courses:D.courses.length, events:D.events.length };
   return '<main class="main" style="max-width:640px;margin:5vh auto"><div class="brand"><b>AdaptPractice</b><i>BETA</i></div>'
-    + '<div class="sheet pad"><h2>Review this device’s learning data</h2><p class="muted" style="margin:10px 0 16px">This device has '+counts.courses+' course(s) and '+counts.events+' event(s). '+(AUTH.hasCloudSnapshot?'Your account already contains saved data. Import merges local records by ID; your cloud profile and duplicate IDs remain unchanged.':'Choose whether to import these records into your private account or start fresh.')+'</p>'
+    + '<div class="sheet pad"><h2>Review this device’s learning data</h2><p class="muted" style="margin:10px 0 16px">This device has '+counts.courses+' course(s) and '+counts.events+' event(s). '+(AUTH.hasCloudSnapshot?'Your account already contains saved data. Import adds missing materials and assignments, and merges matching lesson and answer progress without removing cloud records.':'Choose whether to import these records into your private account or start fresh.')+'</p>'
     + (AUTH.error ? '<div class="note bad" role="alert">'+esc(AUTH.error)+'</div>' : '')
     + '<div class="row" style="margin-top:16px"><button class="btn go" data-act="import-local"'+(AUTH.busy?' disabled':'')+'>'+(AUTH.hasCloudSnapshot?'Merge device data':'Import this data')+'</button><button class="btn sec" data-act="start-fresh"'+(AUTH.busy?' disabled':'')+'>'+(AUTH.hasCloudSnapshot?'Use cloud data':'Start fresh')+'</button></div></div></main>';
 }
@@ -1058,6 +1035,8 @@ function vCourseTab(c, tab){
     return '<div class="sheet pad"><div class="between"><div><h2>Materials</h2><p class="muted">Sources are grouped in lesson order. Reordering sources does not change lesson or assignment progress.</p></div><button class="btn go" data-act="add-source" data-c="'+c.id+'">+ Add material</button></div>'
       + (sources.length ? sources.map((source,index) => '<section class="source-card"><div class="between"><div><span class="tag">'+esc(source.type==='playlist'?'Playlist':source.type==='video'?'Video':source.type==='pdf'?'PDF':'Notes')+'</span> <b>'+esc(source.title)+'</b><div class="dim">'+(source.lessons||[]).length+' lessons'+(source.transcriptStatus==='missing'?' · transcript unavailable':'')+'</div></div>'
         + '<div class="row"><button class="btn ghost sm" data-act="rename-source" data-c="'+c.id+'" data-s="'+source.id+'">Rename</button><button class="btn ghost sm" data-act="source-up" data-c="'+c.id+'" data-s="'+source.id+'"'+(index===0?' disabled':'')+' aria-label="Move source up">↑</button><button class="btn ghost sm" data-act="source-down" data-c="'+c.id+'" data-s="'+source.id+'"'+(index===sources.length-1?' disabled':'')+' aria-label="Move source down">↓</button><button class="btn ghost sm" data-act="remove-source" data-c="'+c.id+'" data-s="'+source.id+'">Remove</button></div></div>'
+        + (source.unavailableCount ? '<div class="note warn" role="status" style="margin-top:10px">'+source.unavailableCount+' unavailable, deleted or private playlist item(s) were skipped. No replacement videos were added.</div>' : '')
+        + (source.enrichmentPending ? '<div class="note warn" role="status" style="margin-top:10px">Material saved without AI enrichment. '+esc(source.enrichmentError || 'Retry when AI is available.')+' <button class="btn sec sm" data-act="retry-enrichment" data-c="'+c.id+'" data-s="'+source.id+'"'+(SAMPLE && !S.busy?'':' disabled')+'>Retry AI enrichment</button></div>' : '')
         + '<ol class="source-preview-list">'+(source.lessons||[]).map(lesson => '<li><button class="btn ghost sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+lesson.id+'">'+esc(lesson.title)+'</button>'+(lesson.page?' <span class="dim">PDF page '+lesson.page+'</span>':'')+(lesson.url?' <a href="'+esc(lesson.url)+'" target="_blank" rel="noopener noreferrer">Video</a>':'')+'</li>').join('')+'</ol></section>').join('')
         : '<div class="sheet empty"><h3>No materials yet</h3><p class="muted">Add a playlist, video, PDF or notes to this course.</p><button class="btn go" data-act="add-source" data-c="'+c.id+'">Add material</button></div>')+'</div>';
   }
@@ -1326,22 +1305,69 @@ function vWeakness(){
   const rows = [];
   D.courses.forEach(c => weakList(c).forEach(x => rows.push({ c, x })));
   rows.sort((a,b) => priority(b.x) - priority(a.x));
-  let h = '<h1>Weakness matrix</h1><p class="muted" style="margin:8px 0 20px;max-width:64ch">Each row needs evidence before it is called a weakness: repeated errors across separate attempts, not one bad answer. Confidence rises as the pattern repeats.</p>';
+  let h = '<div class="between"><div><h1>Weakness matrix</h1><p class="muted" style="margin:8px 0 20px;max-width:64ch">Mistakes remain in the record as mastery changes. Open any topic to review every saved answer, its feedback and source reference.</p></div><button class="btn sec sm" data-act="go" data-view="revision">Revision queue</button></div>';
   if (!rows.length) return h + '<div class="sheet empty"><h3>Nothing recorded yet</h3><p class="muted">Attempt an assignment and every concept you touch appears here.</p></div>';
-  h += '<div class="sheet scroll" style="padding:16px"><table><thead><tr><th>Concept</th><th>Course</th><th class="n">Mastery</th><th class="n">Attempts</th><th class="n">Errors</th><th>Typical error</th><th>Status</th><th>Back to source</th><th></th></tr></thead><tbody>';
+  h += '<div class="sheet scroll" style="padding:16px"><table><thead><tr><th>Concept</th><th>Course</th><th class="n">Mastery</th><th class="n">Attempts</th><th class="n">Mistakes</th><th>Typical error</th><th>Status / priority</th><th>Back to source</th><th></th></tr></thead><tbody>';
   rows.forEach(({c,x}) => {
     const et = Object.entries(x.errorTypes||{}).sort((a,b)=>b[1]-a[1])[0];
     const band = prioBand(priority(x));
-    h += '<tr><td><b style="font-weight:500">'+esc(x.name)+'</b>'+(x.confusion?'<div class="dim">'+x.confusion+' confusion event'+(x.confusion>1?'s':'')+'</div>':'')+'</td>'
+    const records = window.AdaptPracticeWeaknessMatrix.attemptHistory(x);
+    const mistakes = window.AdaptPracticeWeaknessMatrix.mistakeCount(x);
+    const selected = S.weakTopic?.courseId === c.id && S.weakTopic?.concept === x.name;
+    h += '<tr><td><button class="btn ghost sm" data-act="weakness-topic" data-c="'+esc(c.id)+'" data-k="'+esc(x.name)+'" aria-expanded="'+selected+'">'+esc(x.name)+'</button>'
+      + (x.confusion?'<div class="dim">'+x.confusion+' confusion event'+(x.confusion>1?'s':'')+'</div>':'')
+      + '<div class="dim tiny">'+mistakes+' mistake'+(mistakes===1?'':'s')+(mistakes>=2?' · repeated':'')+'</div></td>'
       + '<td class="muted tiny">'+esc(c.name)+'</td>'
       + '<td class="n" style="min-width:90px"><div>'+pct(x.mastery)+'</div><div class="bar '+(x.mastery<50?'bad':x.mastery<75?'warn':'')+'" style="margin-top:4px"><i style="width:'+x.mastery+'%"></i></div></td>'
       + '<td class="n">'+x.attempts+'</td><td class="n">'+Math.round(x.errors)+'</td>'
       + '<td class="tiny muted">'+(et ? esc(et[0]) : '—')+'</td>'
-      + '<td><span class="tag '+({high:'hi',medium:'md',low:'lo'}[band])+'">'+esc(x.status)+'</span></td>'
+      + '<td><span class="tag '+({high:'hi',medium:'md',low:'lo'}[band])+'">'+esc(x.status)+'</span><div class="dim tiny">'+esc(band)+' priority · '+priority(x)+'</div></td>'
       + '<td class="tiny">'+(x.source ? '<button class="btn ghost sm" data-act="review" data-c="'+c.id+'" data-k="'+esc(x.name)+'">'+esc(sourceLabel(c, x.source))+'</button>' : '<span class="dim">—</span>')+'</td>'
-      + '<td class="n">'+(SAMPLE?'<button class="btn sec sm" data-act="target" data-c="'+c.id+'" data-k="'+esc(x.name)+'">Practise</button>':'')+'</td></tr>';
+      + '<td class="n"><button class="btn sec sm" data-act="weakness-topic" data-c="'+esc(c.id)+'" data-k="'+esc(x.name)+'">'+(selected?'Hide history':'History ('+x.attempts+')')+'</button>'
+      + (SAMPLE?'<button class="btn ghost sm" data-act="target" data-c="'+c.id+'" data-k="'+esc(x.name)+'">Practise</button>':'')+'</td></tr>';
   });
-  return h + '</tbody></table></div>';
+  h += '</tbody></table></div>';
+  if (S.weakTopic){
+    const course = getCourse(S.weakTopic.courseId);
+    const concept = course?.concepts?.[S.weakTopic.concept];
+    if (course && concept) h += weaknessTopicHistory(course, concept);
+    else S.weakTopic = null;
+  }
+  return h;
+}
+function weaknessTopicHistory(course, concept){
+  const records = window.AdaptPracticeWeaknessMatrix.attemptHistory(concept);
+  const detailedMistakes = records.filter(record => record.mistake).length;
+  const earlierMistakes = Math.max(0, window.AdaptPracticeWeaknessMatrix.mistakeCount(concept) - detailedMistakes);
+  let h = '<section class="sheet pad" style="margin-top:16px" aria-live="polite"><div class="between"><div><h2>'+esc(concept.name)+' — attempt history</h2>'
+    + '<p class="dim tiny">'+concept.attempts+' total attempt'+(concept.attempts===1?'':'s')+' · '+window.AdaptPracticeWeaknessMatrix.mistakeCount(concept)+' mistake'+(window.AdaptPracticeWeaknessMatrix.mistakeCount(concept)===1?'':'s')
+    + ' · current mastery '+pct(concept.mastery)+' · '+esc(concept.status)+'</p></div>'
+    + (SAMPLE?'<button class="btn go sm" data-act="target" data-c="'+esc(course.id)+'" data-k="'+esc(concept.name)+'">Targeted practice</button>':'')+'</div>';
+  if (earlierMistakes) h += '<div class="note warn" style="margin-top:12px">'+earlierMistakes+' earlier mistake'+(earlierMistakes===1?' was':'s were')+' recorded before detailed answer history was enabled. The original answers were not stored, but the aggregate mistake count is preserved.</div>';
+  if (!records.length){
+    h += '<p class="muted" style="margin-top:14px">Older progress is available, but this topic has no detailed answer records yet. New attempts will be stored with answers, feedback and source references.</p>';
+    if (concept.history?.length) h += '<ul class="timeline" style="margin-top:10px">'+concept.history.slice().reverse().map(item => '<li>'+esc(item.v||'attempt')+' · '+pct(item.m||0)+' mastery · '+esc(dayLabel(item.t))+'</li>').join('')+'</ul>';
+  } else {
+    h += '<p class="dim tiny" style="margin-top:14px">'+records.length+' detailed attempt record'+(records.length===1?'':'s')+' shown below.</p>';
+    h += '<ol class="timeline" style="margin-top:14px">'+records.map(record => {
+      const sourceType = record.source?.referenceType;
+      const sourceName = sourceType === 'pdf' && record.source.page ? 'PDF page '+record.source.page
+        : sourceType === 'video' && record.source.timestamp != null ? 'Video '+mmss(record.source.timestamp)
+          : record.lessonTitle || record.source?.title || '';
+      return '<li class="'+(record.mistake?'no':'ok')+'"><b>'+esc(record.verdict==='correct'?'Correct':record.verdict==='partial'?'Partly correct':'Incorrect')+'</b>'
+        + ' · '+esc(new Date(record.attemptedAt).toLocaleString())+(record.hintUsed?' · hint used':'')
+        + (record.category?'<div class="dim">Category: '+esc(record.category)+(record.categoryDetail&&record.categoryDetail!==record.category?' ('+esc(record.categoryDetail)+')':'')+'</div>':'')
+        + '<div style="margin-top:6px"><b>Question:</b> '+esc(record.question)+'</div>'
+        + '<div><b>Your answer:</b> '+esc(record.studentAnswer)+'</div>'
+        + '<div><b>Correct answer:</b> '+esc(record.correctAnswer)+'</div>'
+        + (record.explanation?'<div><b>Explanation:</b> '+esc(record.explanation)+'</div>':'')
+        + (record.feedback?'<div><b>Feedback:</b> '+esc(record.feedback)+'</div>':'')
+        + (record.timing?.elapsedSeconds != null?'<div class="dim tiny">Assignment duration: '+record.timing.elapsedSeconds+'s</div>':'')
+        + (record.lessonId?'<button class="btn ghost sm" style="margin-top:7px" data-act="attempt-source" data-c="'+esc(course.id)+'" data-k="'+esc(concept.name)+'" data-r="'+esc(record.id)+'">'+(sourceName?'Open '+esc(sourceName):'Open lesson '+esc(record.lessonTitle||''))+'</button>':'')
+        + '</li>';
+    }).join('')+'</ol>';
+  }
+  return h+'</section>';
 }
 
 /* ============================ REVISION ============================ */
@@ -1566,6 +1592,10 @@ const MODE_BRIEF = {
 };
 const JSON_RULE = 'Reply with only the JSON value. No prose before or after, no code fence.';
 
+function validateCourseMap(output, wizard){
+  return window.AdaptPracticeCourseMap.validateCourseMap(output, wizard);
+}
+
 async function buildCourse(w){
   const src = w.srcType;
   const excerpt = w.text || '';
@@ -1587,37 +1617,6 @@ async function buildCourse(w){
       + '"conceptsByLesson" MUST have exactly ' + titles.length + ' entries — one per title above, in the same order, each 2 to 5 short concept names. At most 10 roadmap steps. ' + JSON_RULE;
     return askJson(prompt, { modelTier:'default' });
   }
-  function validateCourseMap(output, wizard){
-    if (!output || typeof output !== 'object' || Array.isArray(output)) throw new Error('The course map was not valid. Your source is still ready; retry the import.');
-    if ((output.gap !== undefined && typeof output.gap !== 'string') || (output.roadmap !== undefined && !Array.isArray(output.roadmap))) throw new Error('The course map response was incomplete. Your source is still ready; retry the import.');
-    const validConcepts = value => Array.isArray(value) && value.every(item => typeof item === 'string');
-    const map = { gap:typeof output.gap === 'string' ? output.gap : '', roadmap:[], lessons:[] };
-    if (Array.isArray(output.roadmap)) {
-      map.roadmap = output.roadmap.map(step => {
-        if (!step || typeof step.title !== 'string' || typeof step.why !== 'string' || !validConcepts(step.concepts)) throw new Error('The course roadmap was incomplete. Your source is still ready; retry the import.');
-        return { title:step.title, why:step.why, concepts:step.concepts.filter(Boolean).slice(0,8) };
-      }).slice(0,10);
-    }
-    if (wizard.srcType === 'playlist') {
-      if (output.conceptsByLesson !== undefined && (!Array.isArray(output.conceptsByLesson) || output.conceptsByLesson.length !== wizard.playlistItems.length || !output.conceptsByLesson.every(validConcepts))) {
-        throw new Error('The AI response did not match the playlist video list. Nothing was added; retry the import.');
-      }
-      map.conceptsByLesson = output.conceptsByLesson || [];
-      return map;
-    }
-    if (!Array.isArray(output.lessons) || output.lessons.some(lesson =>
-      !lesson || typeof lesson.title !== 'string' || !validConcepts(lesson.concepts)
-      || (lesson.page != null && (!Number.isInteger(Number(lesson.page)) || Number(lesson.page) < 1))
-    )) throw new Error('The course map was incomplete. Your source is still ready; retry the import.');
-    map.lessons = output.lessons.slice(0,60).map(lesson => ({
-      title:lesson.title.trim(),
-      concepts:lesson.concepts.filter(Boolean).slice(0,6),
-      page:lesson.page == null ? null : Number(lesson.page),
-      proposed:lesson.proposed === true
-    }));
-    return map;
-  }
-
   let sourceBlock;
   if (src === 'playlist'){
     sourceBlock = 'The learner gave only a playlist link, no titles, and no transcript is available. Do not invent video titles for a playlist you cannot see — return "lessons" as an empty array. Still write the gap analysis and roadmap from the course name, level and goal alone.';
@@ -1895,7 +1894,7 @@ document.addEventListener('click', async e => {
     case 'auth-back': showLanding(); break;
     case 'auth-mode': showAuth(t.dataset.mode); break;
     case 'logout': {
-      if (AUTH.syncStatus === 'pending') await syncPromise;
+      if (AUTH.syncStatus === 'pending') await flushSnapshotSave();
       if (AUTH.syncStatus === 'error') { AUTH.error = AUTH.syncError || 'Your latest changes could not be saved. Try again before signing out.'; toast(AUTH.error, 6000); render(); break; }
       try { await authRequest('/api/auth/logout', { method:'POST', body:'{}' }); }
       catch(error){ AUTH.error = authErrorMessage(error); toast(AUTH.error, 6000); render(); break; }
@@ -1907,7 +1906,13 @@ document.addEventListener('click', async e => {
     case 'import-local': await finishLegacyImport(true); break;
     case 'start-fresh': await finishLegacyImport(false); break;
     case 'sync-retry': await flushSnapshotSave(); break;
+    case 'retry-enrichment': await retrySourceEnrichment(c, (c?.sources||[]).find(source => source.id === t.dataset.s)); break;
     case 'go': if (t.dataset.clear) { S.course = null; S.courseTab = 'overview'; } go(t.dataset.view); break;
+    case 'weakness-topic':
+      S.weakTopic = S.weakTopic?.courseId === t.dataset.c && S.weakTopic?.concept === t.dataset.k
+        ? null : { courseId:t.dataset.c, concept:t.dataset.k };
+      render();
+      break;
     case 'theme': D.settings.theme = t.dataset.t; save(); applyTheme(); render(); break;
     case 'focus-on': D.settings.focus = true; save(); render(); toast('Focus mode on. Navigation is hidden.'); break;
     case 'focus-off': D.settings.focus = false; save(); render(); break;
@@ -2115,6 +2120,23 @@ document.addEventListener('click', async e => {
       toast('No source location was recorded for that concept.');
       break;
     }
+    case 'attempt-source': {
+      const concept = c?.concepts?.[t.dataset.k];
+      const attempt = window.AdaptPracticeWeaknessMatrix.attemptHistory(concept || {}).find(record => record.id === t.dataset.r);
+      const found = attempt?.lessonId ? rawLesson(c, attempt.lessonId) : null;
+      if (!found) { toast('The lesson for this saved source reference is no longer available.'); break; }
+      if (attempt.source.referenceType === 'pdf' && attempt.source.page) {
+        found.lesson.page = attempt.source.page;
+        found.lesson.text = window.AdaptPracticeSourceContext.pageText(found.src.pages, attempt.source.page) || found.lesson.text || '';
+        found.lesson.sourcePages = [attempt.source.page];
+      }
+      if (attempt.source.referenceType === 'video' && attempt.source.timestamp != null) found.lesson.at = attempt.source.timestamp;
+      D.behaviour.revisions++;
+      save();
+      ev('revision', { label:t.dataset.k, detail:attempt.source.referenceType === 'pdf' ? found.lesson.title+' — page '+attempt.source.page : sourceLabel(c, { ...concept.source, at:attempt.source.timestamp }), courseId:c.id });
+      go('lesson', { course:c.id, lesson:found.lesson.id, work:null });
+      break;
+    }
     case 'gen-roadmap': await guard(async () => {
       const out = await genRoadmap(c);
       c.roadmap = out.roadmap || []; c.gap = out.gap || ''; save();
@@ -2220,6 +2242,7 @@ document.addEventListener('change', async e => {
   }
   const token = uid();
   w.pdfToken = token;
+  const previousPdf = { fileName:w.fileName, fingerprint:w.fileFingerprint, text:w.text, pages:w.pages };
   w.fileName = file.name;
   w.fileFingerprint = [file.name.toLowerCase(), file.size, file.lastModified].join(':');
   w.previewReady = false;
@@ -2263,6 +2286,12 @@ document.addEventListener('change', async e => {
     stat.textContent = file.name + ' · all ' + doc.numPages + ' pages read · ' + w.text.length.toLocaleString() + ' characters';
   } catch(err){
     if (S.wizard !== w || w.pdfToken !== token) return;
+    if (previousPdf.text || previousPdf.pages?.length) {
+      w.fileName = previousPdf.fileName;
+      w.fileFingerprint = previousPdf.fingerprint;
+      w.text = previousPdf.text;
+      w.pages = previousPdf.pages;
+    }
     const code = String(err?.code || err?.name || 'pdf_read_error');
     console.error('PDF extraction failed:', { code });
     if (err?.name === 'PasswordException') w.sourceError = 'This PDF is password-protected. Unlock it and select it again, or paste its text.';
@@ -2380,14 +2409,11 @@ async function confirmSourceImport(w){
   w.importState = 'Saving';
   render();
   try {
-    let out;
-    if (SAMPLE) out = validateCourseMap(await buildCourse(w), w);
-    else if (w.srcType === 'playlist') out = { lessons:w.playlistItems.map(item => ({ title:item.title, concepts:[] })), roadmap:[], gap:'' };
-    else if (w.srcType === 'video') out = { lessons:[{ title:w.videoMetadata?.title || ('Video ' + w.videoId), concepts:[], proposed:!w.text.trim() }], roadmap:[], gap:'' };
-    else if (w.srcType === 'pdf') out = { lessons:[{ title:w.fileName || 'Document', concepts:[], page:w.pages.find(page => page.text.trim())?.page }], roadmap:[], gap:'' };
-    else out = { lessons:[{ title:'Pasted notes', concepts:[] }], roadmap:[], gap:'' };
-    if (!SAMPLE) out = validateCourseMap(out, w);
-    finishCourse(w, out);
+    await window.AdaptPracticeCourseMap.confirmSourceImport(w, {
+      aiEnabled:SAMPLE,
+      buildCourse,
+      save:(out, status) => finishCourse(w, out, status)
+    });
   } catch(error) {
     w.sourceError = aiErr(error);
     w.importState = 'Failed';
@@ -2406,7 +2432,7 @@ async function buildFromWizard(){
   if (w.previewReady && w.previewSignature === sourceSignature(w)) return confirmSourceImport(w);
   await prepareSourcePreview(w);
 }
-function finishCourse(w, out){
+function finishCourse(w, out, enrichment){
   let c = w.addTo ? getCourse(w.addTo) : null;
   if (!c){
     c = { id:uid(), name:w.name, level:w.level, known:w.known, goalType:w.mode, modeText:w.modeText, target:w.target,
@@ -2428,6 +2454,10 @@ function finishCourse(w, out){
     unavailableCount:w.srcType==='playlist' ? (w.unavailableCount || 0) : 0,
     duplicateItems:w.srcType==='playlist' ? (w.duplicateItems || []) : [], lessons:[]
   };
+  src.enrichmentPending = enrichment?.attempted ? !enrichment.enriched : true;
+  src.enrichmentError = enrichment?.error
+    ? aiErr(enrichment.error)
+    : src.enrichmentPending ? (AI_COPY[AI_STATUS.code] || 'AI enrichment was not available when this material was added.') : '';
   if (src.type === 'video'){
     src.transcriptSegments = w.transcriptSegments || window.AdaptPracticeSourceContext.parseTranscript(src.text);
     src.transcriptStatus = src.transcriptSegments.length ? 'available' : src.text ? 'manual_unindexed' : 'missing';
@@ -2468,7 +2498,74 @@ function finishCourse(w, out){
   S.wizard = null;
   S.courseTab = 'overview';
   go('course', { course:c.id });
-  toast('Completed: '+src.title+' added with '+src.lessons.length+' lesson'+(src.lessons.length===1?'':'s')+'.');
+  const saveMessage = AUTH.user ? ' Saved locally; account sync is ' + (AUTH.syncStatus === 'pending' ? 'pending.' : 'in progress.') : ' Saved in this browser.';
+  toast('Completed: '+src.title+' added with '+src.lessons.length+' lesson'+(src.lessons.length===1?'':'s')+'.'+(src.enrichmentPending ? ' AI enrichment can be retried from Materials.' : '')+saveMessage, 6000);
+}
+async function retrySourceEnrichment(course, source){
+  if (!course || !source || S.busy) return;
+  if (!SAMPLE){ toast('AI enrichment is unavailable right now. Your saved material is unchanged.', 6000); return; }
+  const wizard = {
+    srcType:source.type, name:course.name, level:course.level, known:course.known,
+    mode:course.goalType, modeText:course.modeText, target:course.target,
+    text:source.text || '', url:source.url || '', fileName:source.title || '',
+    fileFingerprint:source.fingerprint || '', pages:source.pages || [],
+    playlistItems:source.playlistItems || [],
+    titles:(source.playlistItems || []).map(item => item.title).join('\n'),
+    listId:source.listId, videoId:source.videoId,
+    videoMetadata:source.type === 'video' ? { title:source.title } : null
+  };
+  S.busy = 'Retrying AI enrichment…';
+  source.enrichmentError = '';
+  render();
+  try {
+    const output = validateCourseMap(await buildCourse(wizard), wizard);
+    if (source.type === 'playlist'){
+      (source.playlistItems || []).forEach((item, index) => {
+        const lesson = (source.lessons || []).find(entry => entry.videoId === item.id) || source.lessons?.[index];
+        const concepts = (output.conceptsByLesson || [])[index] || [];
+        if (!lesson) return;
+        lesson.concepts = concepts.slice(0,6);
+        lesson.concepts.forEach(name => {
+          const concept = conceptOf(course, name);
+          if (!concept.source) concept.source = { lessonId:lesson.id, title:lesson.title, page:null };
+        });
+      });
+    } else {
+      output.lessons.forEach((entry, index) => {
+        let lesson = source.lessons[index];
+        if (!lesson){
+          lesson = { id:uid(), title:entry.title || ('Lesson ' + (index+1)), concepts:[], done:false, proposed:entry.proposed === true };
+          if (source.type === 'video'){ lesson.url = source.url; lesson.videoId = source.videoId; }
+          if (source.type === 'pdf'){
+            const page = (source.pages || []).find(candidate => candidate.page === entry.page && candidate.text.trim());
+            if (page){ lesson.page = page.page; lesson.text = page.text; lesson.sourcePages = [page.page]; }
+          }
+          if (source.type === 'text') lesson.text = source.text || '';
+          source.lessons.push(lesson);
+        }
+        lesson.concepts = entry.concepts.slice(0,6);
+        lesson.concepts.forEach(name => {
+          const concept = conceptOf(course, name);
+          if (!concept.source) concept.source = { lessonId:lesson.id, title:lesson.title, page:lesson.page || null };
+        });
+      });
+    }
+    if (!(course.roadmap || []).length && output.roadmap.length){ course.roadmap = output.roadmap; course.gap = output.gap; }
+    source.enrichmentPending = false;
+    source.enrichmentError = '';
+    source.enrichedAt = now();
+    ev('source_enriched', { label:source.title, courseId:course.id, sourceId:source.id });
+    save();
+    toast('AI enrichment saved. Existing lesson completion and learning records were preserved.');
+  } catch(error){
+    source.enrichmentPending = true;
+    source.enrichmentError = aiErr(error);
+    save();
+    toast('AI enrichment failed. Your material and progress are unchanged; retry from Materials.', 6000);
+  } finally {
+    S.busy = '';
+    render();
+  }
 }
 function newAssignment(c, out, opts){
   opts = opts || {};
@@ -2488,6 +2585,27 @@ function newAssignment(c, out, opts){
   ev('assignment_created', { label:a.title, detail:(a.focus||[]).join(', '), courseId:c.id });
   save();
   return a;
+}
+function sourceForAttempt(course, assignment, question){
+  const conceptSource = course.concepts?.[question.concept]?.source || {};
+  const lessonId = assignment.lessonId || conceptSource.lessonId || null;
+  const lessonRecord = lessonId ? rawLesson(course, lessonId) : null;
+  const lesson = lessonRecord?.lesson || null;
+  const source = lessonRecord?.src || (course.sources.length === 1 ? course.sources[0] : null);
+  const reference = question.sourceRef || {};
+  const referenceType = reference.type || (source?.type === 'pdf' ? 'pdf' : source?.type === 'video' || source?.type === 'playlist' ? 'video' : null);
+  return {
+    lessonId,
+    lessonTitle:lesson?.title || conceptSource.title || null,
+    id:source?.id || null,
+    type:source?.type || referenceType,
+    title:source?.title || null,
+    url:lesson?.url || source?.url || null,
+    videoId:lesson?.videoId || source?.videoId || null,
+    page:referenceType === 'pdf' ? Number(reference.page || conceptSource.page || lesson?.page) || null : null,
+    timestamp:referenceType === 'video' ? Number(reference.timestamp ?? conceptSource.at ?? lesson?.at) : null,
+    referenceType
+  };
 }
 async function submitAssignment(c, a){
   if (a.submitted) return;
@@ -2510,11 +2628,14 @@ async function submitAssignment(c, a){
 
     a.questions.forEach((q,i) => {
       const r = a.results[i];
-      const src = a.lessonId ? { lessonId:a.lessonId } : (c.concepts[q.concept] || {}).source;
-      const before = c.concepts[q.concept] ? c.concepts[q.concept].status : 'new';
-      const cc = recordAttempt(c, q.concept || 'General', {
-        verdict:r.verdict, hint:!!(a.hints && a.hints[i]), errorType:r.errorType, difficulty:q.difficulty, source:src
+      const before = c.concepts?.[q.concept] ? c.concepts[q.concept].status : 'new';
+      const source = sourceForAttempt(c, a, q);
+      const attemptRecord = window.AdaptPracticeWeaknessMatrix.createAttemptRecord({
+        id:uid(), course:c, assignment:a, question:q, answer:a.answers[i], result:r, index:i, source, attemptedAt:a.submittedAt
       });
+      const cc = recordAttempt(c, q.concept || 'General', {
+        verdict:r.verdict, hint:!!(a.hints && a.hints[i]), errorType:r.errorType, difficulty:q.difficulty
+      }, attemptRecord);
       D.behaviour.answers++;
       if (r.verdict === 'correct') D.behaviour.correct++;
       if (r.verdict !== 'correct') ev('mistake', { label:q.concept, detail:(r.errorType||'') + (r.confidence ? ' · ' + r.confidence + ' confidence' : ''), courseId:c.id });

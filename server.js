@@ -142,28 +142,32 @@ function safeAuthDiagnostic(error, category) {
 
 function aiFailure(err) {
   const message = String((err && err.message) || '');
+  const provider = err?.provider === 'openai' ? 'OpenAI' : 'Gemini';
   if (err && err.code === 'missing_api_key') {
-    return { status: 503, code: 'missing_api_key', message: 'AI is not configured. Add GEMINI_API_KEY to the server environment, then redeploy.' };
+    return { status: 503, code: 'missing_api_key', message: 'AI is not configured. Add a supported provider API key to the server environment, then redeploy.' };
   }
   if (err && err.code === 'invalid_api_key') {
-    return { status: 401, code: 'invalid_api_key', message: 'Gemini rejected the credential. Set GEMINI_API_KEY to an API key from Google AI Studio, not an OAuth access token, then restart or redeploy.' };
+    return { status: 401, code: 'invalid_api_key', message: `${provider} rejected its configured credential. Check the provider API key in the server environment.` };
   }
   if (err && err.code === 'invalid_model') {
-    return { status: 400, code: 'invalid_model', message: 'The configured Gemini model is unavailable. Check GEMINI_MODEL and GEMINI_FALLBACK_MODEL.' };
+    return { status: 400, code: 'invalid_model', message: `The configured ${provider} model is unavailable. Check the configured model name against that provider's available models.` };
   }
   if (err && err.code === 'credits_exhausted' || /quota|credit balance|purchase credits|plans?\s*&?\s*billing/i.test(message)) {
-    return { status: 402, code: 'credits_exhausted', message: 'Gemini quota or credit is exhausted. Check Google AI Studio billing and quota.' };
+    return { status: 402, code: 'credits_exhausted', message: `${provider} quota or credits are exhausted. Check the provider's billing and quota settings.` };
   }
   if ((err && err.code === 'provider_overloaded') || (err && err.status === 503) || /overload|high demand/i.test(message)) {
-    return { status: 503, code: 'provider_overloaded', message: 'Gemini is experiencing high demand. Please retry in a moment.' };
+    return { status: 503, code: 'provider_overloaded', message: `${provider} is temporarily overloaded. Please retry in a moment.` };
   }
   if (err && err.code === 'provider_unavailable') {
-    return { status: 503, code: 'provider_unavailable', message: 'Gemini is currently unavailable. Try again later.' };
+    return { status: 503, code: 'provider_unavailable', message: `${provider} is currently unavailable. Try again later.` };
+  }
+  if (err && err.code === 'provider_timeout') {
+    return { status: 504, code: 'provider_timeout', message: `The ${provider} request timed out. Please retry.` };
   }
   if (/overloaded_error|overloaded/i.test(message)) {
-    return { status: 529, code: 'provider_overloaded', message: 'The AI provider is temporarily overloaded. Please retry in a moment.' };
+    return { status: 529, code: 'provider_overloaded', message: `${provider} is temporarily overloaded. Please retry in a moment.` };
   }
-  return { status: 502, code: 'upstream_error', message: message || 'The AI provider could not complete the request. Please try again.' };
+  return { status: 502, code: 'upstream_error', message: message ? `${provider} request failed: ${message}` : `${provider} could not complete the request. Please try again.` };
 }
 
 function asyncRoute(fn) {
@@ -178,8 +182,11 @@ function asyncRoute(fn) {
     if (code.startsWith('youtube_')) {
       return bad(res, Number.isInteger(err.status) ? err.status : 502, err.message, code);
     }
-    const failure = aiFailure(err);
-    bad(res, failure.status, failure.message, failure.code);
+    if (/^\/(?:api\/)?ai(?:\/|$)/.test(req.path)) {
+      const failure = aiFailure(err);
+      return bad(res, failure.status, failure.message, failure.code);
+    }
+    return bad(res, Number.isInteger(err.status) ? err.status : 500, 'The request could not be completed. Please retry.', 'request_failed');
   });
 }
 
@@ -411,10 +418,10 @@ app.get('/api/auth/session', authenticateRequest, (req, res) => {
 app.post('/api/auth/logout', authenticateRequest, asyncRoute(async (req, res) => {
   const cookies = cookieValues(req);
   try {
-    if (cookies.ap_refresh && cookies.ap_access) {
+    if (cookies.ap_refresh && req.authToken) {
       const { url, anonKey } = getSupabaseConfig();
       const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
-      await client.auth.setSession({ access_token: cookies.ap_access, refresh_token: cookies.ap_refresh });
+      await client.auth.setSession({ access_token: req.authToken, refresh_token: cookies.ap_refresh });
       await client.auth.signOut({ scope: 'local' });
     }
   } finally {
@@ -573,6 +580,13 @@ app.post(['/api/ai/stream', '/ai/stream'], authenticateRequest, persistentUserAi
     const failure = aiFailure(err);
     finish(`data: ${JSON.stringify({ error: failure.message, code: failure.code })}\n\n`);
   }
+});
+
+app.use('/api', (req, res) => bad(res, 404, 'API endpoint not found.', 'not_found'));
+app.use((error, req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next(error);
+  const status = Number.isInteger(error.status) && error.status >= 400 && error.status < 600 ? error.status : 400;
+  return bad(res, status, status === 400 ? 'The API request was invalid.' : 'The API request could not be completed.', 'invalid_api_request');
 });
 
 if (require.main === module) {

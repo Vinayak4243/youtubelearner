@@ -16,11 +16,13 @@ function bearerToken(req) {
 }
 
 function cookieValues(req) {
-  return Object.fromEntries(String(req.headers.cookie || '').split(';').map(part => {
+  return Object.fromEntries(String(req.headers.cookie || '').split(';').flatMap(part => {
     const index = part.indexOf('=');
-    if (index < 0) return ['', ''];
-    return [part.slice(0, index).trim(), decodeURIComponent(part.slice(index + 1).trim())];
-  }).filter(([name]) => name));
+    if (index < 0) return [];
+    const name = part.slice(0, index).trim();
+    try { return name ? [[name, decodeURIComponent(part.slice(index + 1).trim())]] : []; }
+    catch (error) { return []; }
+  }));
 }
 
 function sessionCookies(session, clear = false) {
@@ -46,13 +48,18 @@ function createUserClient(token) {
 async function authenticateRequest(req, res, next) {
   if (!hasSupabaseConfig()) return res.status(503).json({ error: 'Authentication is not configured.', code: 'auth_unavailable' });
   const cookies = cookieValues(req);
-  let token = bearerToken(req) || cookies.ap_access;
-  if (!token) return res.status(401).json({ error: 'Sign in to continue.', code: 'not_authenticated' });
+  let token = bearerToken(req) || cookies.ap_access || null;
+  if (!token && !cookies.ap_refresh) return res.status(401).json({ error: 'Sign in to continue.', code: 'not_authenticated' });
 
   try {
-    let client = createUserClient(token);
-    const { data, error } = await client.auth.getUser(token);
-    if (error || !data.user) {
+    let client;
+    let user = null;
+    if (token) {
+      client = createUserClient(token);
+      const { data, error } = await client.auth.getUser(token);
+      if (!error && data.user) user = data.user;
+    }
+    if (!user) {
       if (!cookies.ap_refresh) return res.status(401).json({ error: 'Your session expired. Sign in again.', code: 'session_expired' });
       const { url, anonKey } = getSupabaseConfig();
       const refreshClient = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
@@ -64,10 +71,9 @@ async function authenticateRequest(req, res, next) {
       token = refreshed.data.session.access_token;
       res.setHeader('Set-Cookie', sessionCookies(refreshed.data.session));
       client = createUserClient(token);
-      req.user = refreshed.data.user;
-    } else {
-      req.user = data.user;
+      user = refreshed.data.user;
     }
+    req.user = user;
     req.userSupabase = client;
     req.authToken = token;
     next();
