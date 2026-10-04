@@ -15,6 +15,7 @@ let providerStatus = { status: 200, body: '{}' };
 let providerStreamBody = 'data: {"candidates":[{"content":{"parts":[{"text":"streamed answer"}]}}]}\n\n';
 let lastSnapshotWrite = null;
 let mockSnapshotRevision = 3;
+let missingSnapshotRpc = false;
 let youtubePageRequests = [];
 let youtubePlaylistStatus = 200;
 let refreshStatus = 200;
@@ -116,6 +117,12 @@ global.fetch = async (input, init) => {
       }]), { status:200, headers:{'content-type':'application/json'} });
     }
     if (url.pathname.endsWith('/rpc/get_learner_snapshot_piece')) {
+      if (missingSnapshotRpc) {
+        return new Response(JSON.stringify({
+          code:'PGRST202',
+          message:'Could not find the function public.get_learner_snapshot_piece.'
+        }), { status:404, headers:{'content-type':'application/json'} });
+      }
       return new Response(JSON.stringify([{
         content:JSON.stringify({ profile:{ name:'Learner' }, courses:[], events:[] }),
         chunk_count:1,
@@ -153,6 +160,13 @@ global.fetch = async (input, init) => {
       if (init.method === 'POST') {
         lastSnapshotWrite = JSON.parse(init.body);
         return new Response(JSON.stringify([{ updated_at: '2026-10-02T00:00:00Z' }]), { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+      if (missingSnapshotRpc) {
+        assert.equal(url.searchParams.get('user_id'), 'eq.user-1');
+        return new Response(JSON.stringify({
+          payload:{ profile:{ name:'Legacy learner' }, courses:[{ id:'existing-course' }], events:[] },
+          updated_at:'2026-09-30T00:00:00Z'
+        }), { status:200, headers:{'content-type':'application/json'} });
       }
       return new Response(JSON.stringify({ payload: { profile: { name: 'Learner' }, courses: [] }, updated_at: '2026-10-02T00:00:00Z' }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
@@ -700,6 +714,24 @@ test('authenticated users read only the RLS-scoped snapshot client', async () =>
   assert.equal(response.status, 200);
   assert.equal(body.user.id, 'user-1');
   assert.deepEqual(body.snapshot.profile, { name: 'Learner' });
+});
+
+test('snapshot loading falls back to the authenticated user legacy snapshot when the migration RPC is missing', async () => {
+  missingSnapshotRpc = true;
+  try {
+    const response = await fetch(`${baseUrl}/api/learner/snapshot`, {
+      headers:{ authorization:'Bearer '+testAccessToken }
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.user.id, 'user-1');
+    assert.equal(body.snapshot.profile.name, 'Legacy learner');
+    assert.equal(body.snapshot.courses[0].id, 'existing-course');
+    assert.equal(body.hasSnapshot, true);
+    assert.equal(body.revision, 0);
+  } finally {
+    missingSnapshotRpc = false;
+  }
 });
 
 test('snapshot ownership is assigned from the verified user, not request data', async () => {

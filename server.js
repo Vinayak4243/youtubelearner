@@ -100,6 +100,10 @@ function bad(res, status, message, code) {
   return res.status(status).json({ error: message, ...(code ? { code } : {}) });
 }
 
+function isMissingSnapshotRpc(error) {
+  return ['PGRST202', '42883'].includes(String(error?.code || ''));
+}
+
 function classifySignupFailure(error) {
   const message = String(error?.message || '').toLowerCase();
   const providerCode = String(error?.code || '').toLowerCase();
@@ -484,6 +488,28 @@ app.post('/api/auth/reset-password', authenticateRequest, asyncRoute(async (req,
 
 app.get('/api/learner/snapshot', authenticateRequest, asyncRoute(async (req, res) => {
   const { data, error } = await req.userSupabase.rpc('get_learner_snapshot_piece', { p_chunk_index:-1 });
+  if (error && isMissingSnapshotRpc(error)) {
+    const legacy = await req.userSupabase.from('learner_snapshots')
+      .select('payload,updated_at')
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+    if (legacy.error) {
+      return bad(res, 503, 'Could not load your learning data. Apply the snapshot database migration and retry.', 'database_unavailable');
+    }
+    const snapshot = legacy.data?.payload || null;
+    if (snapshot !== null && (typeof snapshot !== 'object' || Array.isArray(snapshot))) {
+      return bad(res, 503, 'The saved learning data is invalid. Contact support before retrying.', 'invalid_saved_snapshot');
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({
+      user:{ id:req.user.id, email:req.user.email },
+      snapshot,
+      hasSnapshot:Boolean(snapshot),
+      chunkCount:snapshot ? 1 : 0,
+      revision:0,
+      updatedAt:legacy.data?.updated_at || null
+    });
+  }
   if (error) return bad(res, 503, 'Could not load your learning data. Apply the database migration and retry.', 'database_unavailable');
   const row = Array.isArray(data) ? data[0] : data;
   let snapshot = null;
