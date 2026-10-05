@@ -175,11 +175,11 @@ function cleanPlaylistPaste(raw){
   }
   return out;
 }
-let ytTime = 0, ytPoll = null, ytAlive = false;
+let ytTime = 0, ytPoll = null, ytAlive = false, ytLessonKey = '';
 window.addEventListener('message', ev => {
   if (!/youtube(-nocookie)?\.com$/.test(String(ev.origin).replace(/^https?:\/\/(www\.)?/,''))) return;
   try { const d = typeof ev.data === 'string' ? JSON.parse(ev.data) : ev.data;
-    if (d && d.info && typeof d.info.currentTime === 'number') ytTime = d.info.currentTime;
+    if (d && d.info && typeof d.info.currentTime === 'number') rememberLessonTime(d.info.currentTime);
     if (d && (d.info || d.event)){ ytAlive = true; const n = document.getElementById('playnote'); if (n) n.classList.add('live'); }
     // The embedded player broadcasts its own metadata over this same channel.
     // When a lesson is still an untitled placeholder, that's the real title —
@@ -220,11 +220,44 @@ function captureAutoTitle(title, videoId){
 function ytHandshake(){
   clearInterval(ytPoll);
   ytAlive = false;
+  rememberLessonTime();
   ytPoll = setInterval(() => {
     const f = document.getElementById('ytframe');
     if (!f || !f.contentWindow) return;
-    try { f.contentWindow.postMessage(JSON.stringify({event:'listening', id:1, channel:'widget'}), '*'); } catch(e){}
+    try {
+      f.contentWindow.postMessage(JSON.stringify({event:'listening', id:1, channel:'widget'}), '*');
+      f.contentWindow.postMessage(JSON.stringify({event:'command', func:'getCurrentTime', args:[], id:1, channel:'widget'}), '*');
+    } catch(e){}
   }, 1000);
+}
+function currentLessonKey(){ return S.view === 'lesson' && S.course && S.lesson ? S.course + ':' + S.lesson : ''; }
+function rememberLessonTime(value){
+  const key = currentLessonKey();
+  if (!key) return;
+  if (key !== ytLessonKey){
+    ytLessonKey = key;
+    const c = getCourse(S.course);
+    const l = c && findLesson(c, S.lesson);
+    ytTime = Math.max(0, Number(l?.at || (c?.resume?.lessonId === S.lesson ? c.resume.at : 0) || 0));
+  }
+  const next = Number(value);
+  if (!Number.isFinite(next) || next < 0) return;
+  ytTime = next;
+  const c = getCourse(S.course);
+  const record = c && rawLesson(c, S.lesson);
+  if (!c || !record) return;
+  const at = Math.round(next);
+  record.lesson.at = at;
+  c.resume = { lessonId:S.lesson, t:now(), at };
+}
+function captureLessonPlayback(){
+  if (S.view !== 'lesson') return;
+  const f = document.getElementById('ytframe');
+  if (f && f.contentWindow) {
+    try { f.contentWindow.postMessage(JSON.stringify({event:'command', func:'getCurrentTime', args:[], id:1, channel:'widget'}), '*'); } catch(e){}
+  }
+  rememberLessonTime(ytTime);
+  save();
 }
 
 /* ---------- Claude, via our own backend (server/server.js) ----------
@@ -685,8 +718,9 @@ const AI_COPY = {
   cancelled:'Stopped.',
   upstream_error:'The AI request failed. Try again.'
 };
+const AI_REQUEST_TIMEOUT_MS = 180000;
 const aiErr = e => e && (e.name === 'TimeoutError' || e.name === 'AbortError')
-  ? 'The AI request timed out. Your source is still ready; retry the import.'
+  ? 'The AI request timed out. Your lesson is still ready; retry the request.'
   : AI_COPY[e && e.code] || (e && e.message) || AI_COPY.upstream_error;
 function aiAvailable(){ return !!SAMPLE; }
 
@@ -695,13 +729,13 @@ async function ask(input, opts){
   opts = opts || {};
   if (!SAMPLE) throw { code:'not_granted', message:'backend unreachable' };
   if (!opts.onText) {
-    const res = await fetch(API_BASE + '/api/ai/text', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(90000) });
+    const res = await fetch(API_BASE + '/api/ai/text', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS) });
     if (!res.ok) throw await backendError(res);
     const data = await res.json();
     return { text: data.text || '' };
   }
   return new Promise((resolve, reject) => {
-    fetch(API_BASE + '/api/ai/stream', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(90000) })
+    fetch(API_BASE + '/api/ai/stream', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS) })
       .then(async res => {
         if (!res.ok || !res.body) return reject(await backendError(res));
         const reader = res.body.getReader(); const decoder = new TextDecoder();
@@ -729,7 +763,7 @@ async function ask(input, opts){
 /** JSON completion — the backend extracts/repairs JSON from Claude's reply and returns the parsed value directly. */
 async function askJson(input, opts){
   if (!SAMPLE) throw { code:'not_granted', message:'backend unreachable' };
-  const res = await fetch(API_BASE + '/api/ai/json', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(90000) });
+  const res = await fetch(API_BASE + '/api/ai/json', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS) });
   if (!res.ok) throw await backendError(res);
   return res.json();
 }
@@ -797,7 +831,7 @@ function rawLesson(course, id){
 const getCourse = id => D.courses.find(c => c.id === id);
 
 /* ---------- router ---------- */
-const S = { view:'landing', course:null, lesson:null, work:null, busy:'', apiError:'', modal:null, wizard:null, session:null, courseTab:'overview', courseSearch:'', weakTopic:null, historyPage:0, historyCourse:null, lessonMapOpen:true, tabAction:null };
+const S = { view:'landing', course:null, lesson:null, work:null, busy:'', apiError:'', modal:null, wizard:null, session:null, courseTab:'overview', courseSearch:'', weakTopic:null, historyPage:0, historyCourse:null, lessonMapOpen:true, lessonSlide:'video', confusePrompt:null, tabAction:null };
 function updateAuthLocation(mode, replace){
   const hash = mode ? window.AdaptPracticeAuthRoutes.hashForMode(mode) : '';
   const url = location.pathname + location.search + hash;
@@ -1390,7 +1424,9 @@ function vLesson(){
   const courseProgress = list.length ? Math.round((doneCount / list.length) * 100) : 0;
 
   let embedSrc = null;
-  const common = 'rel=0&modestbranding=1&controls=1&enablejsapi=1&origin=' + encodeURIComponent(location.origin) + (lesson.at ? '&start='+Math.floor(lesson.at) : '') + '&playsinline=1';
+  const resumeAt = c.resume && c.resume.lessonId === lesson.id ? Number(c.resume.at || 0) : 0;
+  const startAt = Math.max(0, Math.floor(Number(lesson.at || resumeAt || 0)));
+  const common = 'rel=0&modestbranding=1&controls=1&enablejsapi=1&origin=' + encodeURIComponent(location.origin) + (startAt ? '&start='+startAt : '') + '&playsinline=1';
   const embedBase = 'https://www.youtube.com/embed';
   if (vid) embedSrc = embedBase + '/' + vid + '?' + common;
   else if (src.type === 'playlist' && listId) embedSrc = embedBase + '/videoseries?list=' + encodeURIComponent(listId) + '&index=' + (lesson.index||1) + '&' + common;
@@ -1426,29 +1462,70 @@ function vLesson(){
     stage = '<div class="stage"><div class="stagefall">No playable link on this lesson — the playlist link did not contain a list id. Everything else on this page still works.</div></div>';
   }
 
+  const slide = ['video','summary','practice'].includes(S.lessonSlide) ? S.lessonSlide : 'video';
+  const slideTabs = '<nav class="lesson-slides" aria-label="Lesson slides">'
+    + [['video','1','Video'],['summary','2','Summary'],['practice','3','Practice']]
+      .map(item => '<button class="lesson-slide-tab'+(slide===item[0]?' on':'')+'" data-act="lesson-slide" data-slide="'+item[0]+'" aria-current="'+(slide===item[0])+'"><span>'+item[1]+'</span>'+item[2]+'</button>')
+      .join('')
+    + '</nav>';
+  const lessonFooter = '<div class="row between lesson-foot">'
+    + (prev ? '<button class="btn sec sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+prev.id+'">← '+esc(prev.title.slice(0,28))+'</button>' : '<span></span>')
+    + (next ? '<button class="btn sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+next.id+'">'+esc(next.title.slice(0,28))+' →</button>' : '<span></span>')
+    + '</div>';
+
+  const conceptTags = lesson.concepts && lesson.concepts.length ? '<div class="row tiny" style="gap:6px;margin-bottom:14px">'+lesson.concepts.map(k => {
+      const cc = c.concepts[k]; const band = cc ? ({high:'hi',medium:'md',low:'lo'}[prioBand(priority(cc))]) : '';
+      return '<span class="tag '+band+'">'+esc(k)+(cc&&cc.attempts?' '+pct(cc.mastery):'')+'</span>';
+    }).join('')+'</div>' : '';
+
+  const confusionPrompt = S.confusePrompt && S.confusePrompt.lessonId === lesson.id
+    ? '<div class="confuse-panel">'
+      + '<div><h3>What moment lost you?</h3><p class="muted">The player\'s current position is filled in below. Adjust it if the idea started a little earlier.</p></div>'
+      + '<label class="f" for="cf-at">Timestamp</label>'
+      + '<input id="cf-at" type="text" value="'+esc(mmss(S.confusePrompt.at || 0))+'" inputmode="numeric">'
+      + '<div class="row"><button class="btn go" data-act="confuse-go" data-c="'+c.id+'" data-l="'+lesson.id+'">Explain this</button>'
+      + '<button class="btn ghost" data-act="confuse-cancel">Cancel</button></div>'
+      + '</div>'
+    : '';
+
+  const videoSlide = stage
+    + confusionPrompt
+    + '<div class="lesson-actions">'
+    + '<button class="btn sec" data-act="lesson-slide" data-slide="summary">Go to summary</button>'
+    + '<button class="btn go" data-act="lesson-slide" data-slide="practice">Go to practice</button>'
+    + '<button class="btn sec" data-act="confuse" data-c="'+c.id+'" data-l="'+lesson.id+'" title="Capture the current playback moment and ask for an explanation">I don\'t understand this</button>'
+    + (watchUrl ? '<a class="btn ghost" href="'+esc(watchUrl)+'" target="_blank" rel="noopener">Watch on YouTube ↗</a>' : '')
+    + '</div>'
+    + '<div class="lesson-slide-body">' + conceptTags + (S.explain ? explainBlock() : '') + lessonFooter + '</div>';
+
+  const summarySlide = '<div class="lesson-slide-body lesson-reading">'
+    + '<div class="between" style="margin-bottom:16px"><div><span class="pill">SLIDE 2</span><h2>Summary of the lecture</h2></div>'
+    + '<button class="btn sec sm" data-act="lesson-slide" data-slide="video">Back to video</button></div>'
+    + (lesson.summary
+      ? '<div class="sheet pad md"><div class="between"><h3>Key takeaways</h3><span class="tag">'+(hasSourceText?'Based on source text':'General knowledge — no transcript text')+'</span></div><div style="margin-top:12px">'+mdLite(lesson.summary)+'</div></div>'
+      : S.busy === 'summary'
+        ? '<div class="sheet pad"><div class="think"><span class="spin"></span> Reading the lecture and building the summary…</div></div>'
+        : '<div class="sheet empty"><h3>No summary yet</h3><p class="muted">Generate a focused summary for this lesson and keep it here as slide two.</p>'+(SAMPLE?'<button class="btn go" data-act="summarize" data-c="'+c.id+'" data-l="'+lesson.id+'">Summarise this lesson</button>':'<div class="note bad">The AI service is unavailable, so summaries cannot be generated.</div>')+'</div>')
+    + lessonFooter + '</div>';
+
+  const practiceSlide = '<div class="lesson-slide-body lesson-practice">'
+    + '<div class="between" style="margin-bottom:16px"><div><span class="pill">SLIDE 3</span><h2>Practice session quiz</h2></div>'
+    + (a && a.submitted ? '<button class="btn sec sm" data-act="new-assign" data-c="'+c.id+'" data-l="'+lesson.id+'">New quiz</button>' : '<button class="btn sec sm" data-act="lesson-slide" data-slide="video">Back to video</button>') + '</div>'
+    + (a ? assignmentHtml(c, a, false)
+      : S.busy === 'assign'
+        ? '<div class="sheet pad"><div class="think"><span class="spin"></span> Writing questions from this lesson and your last mistakes…</div></div>'
+        : '<div class="sheet empty"><h3>Ready to practise?</h3><p class="muted" style="max-width:46ch;margin:0 auto 14px">Build a short quiz from this lesson and the concepts you have been getting wrong.</p>'+(SAMPLE?'<button class="btn go" data-act="new-assign" data-c="'+c.id+'" data-l="'+lesson.id+'">Start practice</button>':'<div class="note bad">The AI service is unavailable, so questions cannot be generated.</div>')+'</div>')
+    + lessonFooter + '</div>';
+
   let left = '<main class="lesson-main">'
     + '<div class="lbar"><div><div class="t" data-role="lesson-title">'+esc(lesson.title)+(lesson.auto ? ' <span class="dim" style="font-size:.7rem;color:var(--onink-2)">· fills in as it plays</span>' : '')+'</div><div class="s">'+esc(c.name)+' · lesson '+(i+1)+' of '+list.length+'</div></div>'
     + '<div class="row" style="margin-left:auto;gap:8px">'
     + '<button class="btn ghost sm lesson-map-toggle" data-act="toggle-lesson-map" style="color:var(--onink-2)" aria-label="'+(S.lessonMapOpen?'Hide':'Show')+' course map">'+(S.lessonMapOpen?'☰':'☷')+' Course map</button>'
     + '<button class="btn sec sm" style="border-color:var(--ink-3);color:var(--onink-2);background:transparent" data-act="close-lesson" data-c="'+c.id+'">Close</button>'
     + '<button class="btn sm" style="background:var(--pine);border-color:var(--pine)" data-act="toggle-done" data-c="'+c.id+'" data-l="'+lesson.id+'">'+(lesson.done?'Done ✓':'Mark done')+'</button></div></div>'
-    + stage
-    + '<div class="lesson-actions">'
-    + '<a class="btn go" href="'+esc(lessonTabUrl('practice', c.id, lesson.id))+'" target="_blank" rel="noopener">'+(a?'Practise again':'Practise this lesson')+' ↗</a>'
-    + '<button class="btn sec" data-act="confuse" data-c="'+c.id+'" data-l="'+lesson.id+'" title="Capture the current playback moment and ask for an explanation">I don\'t understand this</button>'
-    + (watchUrl ? '<a class="btn ghost" href="'+esc(watchUrl)+'" target="_blank" rel="noopener">Watch on YouTube ↗</a>' : '')
-    + '</div>'
-    + '<div style="padding:16px">'
-    + (lesson.concepts && lesson.concepts.length ? '<div class="row tiny" style="gap:6px;margin-bottom:14px">'+lesson.concepts.map(k => {
-        const cc = c.concepts[k]; const band = cc ? ({high:'hi',medium:'md',low:'lo'}[prioBand(priority(cc))]) : '';
-        return '<span class="tag '+band+'">'+esc(k)+(cc&&cc.attempts?' '+pct(cc.mastery):'')+'</span>';
-      }).join('')+'</div>' : '')
-    + (lesson.summary ? '<div class="sheet pad md" style="margin-bottom:14px"><div class="between"><h3>Summary</h3><span class="tag">'+(hasSourceText?'Based on source text':'General knowledge — no transcript text')+'</span></div><div style="margin-top:8px;font-size:.9rem"><p>'+mdLite(lesson.summary)+'</p></div></div>'
-        : (SAMPLE ? '<a class="btn sec sm" href="'+esc(lessonTabUrl('summary', c.id, lesson.id))+'" target="_blank" rel="noopener" style="margin-bottom:14px">Summarise this lesson ↗</a>' : ''))
-    + '<div class="row between" style="margin-top:16px">'
-    + (prev ? '<button class="btn sec sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+prev.id+'">← '+esc(prev.title.slice(0,28))+'</button>' : '<span></span>')
-    + (next ? '<button class="btn sm" data-act="open-lesson" data-c="'+c.id+'" data-l="'+next.id+'">'+esc(next.title.slice(0,28))+' →</button>' : '<span></span>')
-    + '</div></div></main>';
+    + slideTabs
+    + (slide === 'summary' ? summarySlide : slide === 'practice' ? practiceSlide : videoSlide)
+    + '</main>';
 
   const lessonMap = '<aside class="lesson-map'+(S.lessonMapOpen?'':' is-hidden')+'">'
     + '<div class="lesson-map-head"><div><span class="pill">COURSE PROGRESS</span><strong>'+courseProgress+'%</strong></div><button class="btn ghost sm" data-act="toggle-lesson-map" aria-label="Hide course map">×</button></div>'
@@ -1459,20 +1536,7 @@ function vLesson(){
     + list.map(l => '<li data-act="open-lesson" data-c="'+c.id+'" data-l="'+l.id+'" data-lesson-li="'+l.id+'" aria-current="'+(l.id===lesson.id)+'"><span class="mk '+(l.done?'done':'')+'">'+(l.done?'✓':l.id===lesson.id?'▸':'○')+'</span><span class="lbl">'+esc(l.title)+'</span>'+(l.auto?' <span class="dim tiny">auto</span>':'')+'</li>').join('')
     + '</ul></aside>';
 
-  let pane = '<aside class="lpane">';
-  pane += '<div class="between" style="margin-bottom:12px"><h3>Practice</h3>'
-    + (a && a.submitted ? '<button class="btn sec sm" data-act="new-assign" data-c="'+c.id+'" data-l="'+lesson.id+'">New set</button>' : '') + '</div>';
-  if (S.explain){ pane += explainBlock(); }
-  if (a){ pane += assignmentHtml(c, a, true); }
-  else if (S.busy === 'assign'){ pane += '<div class="think"><span class="spin"></span> Writing questions from this lesson and your last mistakes…</div>'; }
-  else {
-    pane += '<div class="practice-ready"><span class="pill">NEXT BEST ACTION</span><h3>Ready to practise?</h3><p>Build a short set from this lesson and the concepts you have been getting wrong.</p>'
-      + '<div class="practice-meta"><span>5 questions</span><span>~10 minutes</span></div></div>'
-      + (SAMPLE ? '<a class="btn go" href="'+esc(lessonTabUrl('practice', c.id, lesson.id))+'" target="_blank" rel="noopener" style="margin-top:12px;width:100%;min-height:42px">Start practice ↗</a>'
-                : '<div class="note bad" style="margin-top:12px">The AI service is unavailable, so questions cannot be generated.</div>');
-  }
-  pane += '</aside>';
-  return '<div class="lesson'+(S.lessonMapOpen?'':' map-hidden')+'">' + lessonMap + left + pane + '</div>' + (S.modal || '');
+  return '<div class="lesson'+(S.lessonMapOpen?'':' map-hidden')+'">' + lessonMap + left + '</div>' + (S.modal || '');
 }
 function explainBlock(){
   const x = S.explain;
@@ -2627,26 +2691,35 @@ document.addEventListener('click', async e => {
       save(); render(); break;
     }
     case 'open-lesson': {
+      captureLessonPlayback();
       const course = c || getCourse(S.course);
       const l = findLesson(course, t.dataset.l);
-      course.resume = { lessonId:l.id, t:now(), at:course.resume && course.resume.lessonId===l.id ? course.resume.at : 0 };
+      const at = Math.max(0, Math.round(Number(l.at || (course.resume && course.resume.lessonId===l.id ? course.resume.at : 0) || 0)));
+      course.resume = { lessonId:l.id, t:now(), at };
+      l.at = at;
       save();
       ev('lesson_opened', { label:l.title, detail:course.name, courseId:course.id });
       S.explain = null;
+      S.confusePrompt = null;
+      ytLessonKey = '';
+      ytTime = at;
       const open = (course.assignments||[]).find(x => x.lessonId === l.id && !x.submitted);
-      go('lesson', { course:course.id, lesson:l.id, work: open ? open.id : null });
+      go('lesson', { course:course.id, lesson:l.id, work: open ? open.id : null, lessonSlide:'video' });
       break;
     }
     case 'toggle-lesson-map': S.lessonMapOpen = !S.lessonMapOpen; render(); break;
+    case 'lesson-slide': captureLessonPlayback(); S.lessonSlide = t.dataset.slide || 'video'; render(); break;
     case 'open-lesson-tab': openLessonTab(t.dataset.tab, t.dataset.c, t.dataset.l); break;
-    case 'close-lesson': clearInterval(ytPoll); go('course', { course:c.id, lesson:null, work:null }); break;
+    case 'close-lesson': captureLessonPlayback(); clearInterval(ytPoll); go('course', { course:c.id, lesson:null, work:null }); break;
     case 'toggle-done': {
       const r = rawLesson(c, t.dataset.l); r.lesson.done = !r.lesson.done;
       if (r.lesson.done) ev('lesson_done', { label:r.lesson.title, detail:c.name, courseId:c.id });
       save(); render(); break;
     }
     case 'summarize': {
+      captureLessonPlayback();
       const l = findLesson(c, t.dataset.l);
+      S.lessonSlide = 'summary';
       await guard(async () => {
         const text = await summarizeLesson(c, l);
         rawLesson(c, l.id).lesson.summary = text;
@@ -2656,7 +2729,9 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'generate-summary-tab': {
+      captureLessonPlayback();
       const l = findLesson(c, t.dataset.l || S.lesson);
+      S.lessonSlide = 'summary';
       await guard(async () => {
         const text = await summarizeLesson(c, l);
         rawLesson(c, l.id).lesson.summary = text;
@@ -2668,18 +2743,23 @@ document.addEventListener('click', async e => {
 
     /* confusion */
     case 'confuse': {
+      captureLessonPlayback();
       const l = findLesson(c, t.dataset.l);
       const at = Math.round(ytTime || (c.resume && c.resume.at) || 0);
-      S.modal = confuseModal(c, l, at); render(); break;
+      S.lessonSlide = 'video';
+      S.confusePrompt = { courseId:c.id, lessonId:l.id, at };
+      render();
+      requestAnimationFrame(() => document.getElementById('cf-at')?.focus());
+      break;
     }
     case 'confuse-go': {
       const l = findLesson(c, t.dataset.l);
       const at = parseTime(val('cf-at'));
-      S.modal = null;
+      S.confusePrompt = null;
       await runExplain(c, l, at, 'simple');
       break;
     }
-    case 'confuse-cancel': S.modal = null; render(); break;
+    case 'confuse-cancel': S.confusePrompt = null; render(); break;
     case 'explain-mode': {
       const x = S.explain; if (!x) return;
       const course = getCourse(x.courseId), lesson = course && findLesson(course, x.lessonId);
@@ -2691,7 +2771,9 @@ document.addEventListener('click', async e => {
 
     /* assignments */
     case 'new-assign': {
+      captureLessonPlayback();
       const course = c || getCourse(S.course);
+      if (S.view === 'lesson') S.lessonSlide = 'practice';
       await guard(async () => {
         const out = await genAssignment(course, { lessonId: t.dataset.l || (S.view==='lesson' ? S.lesson : null) });
         const asg = newAssignment(course, out, { lessonId: t.dataset.l || (S.view==='lesson' ? S.lesson : null) });
@@ -3323,7 +3405,13 @@ setInterval(() => { if (S.session && S.view === 'shield'){ if (S.session.until <
 setInterval(() => {
   if (S.view === 'lesson' && ytTime > 0){
     const c = getCourse(S.course);
-    if (c && c.resume && c.resume.lessonId === S.lesson){ c.resume.at = Math.round(ytTime); c.resume.t = now(); save(); }
+    const r = c && rawLesson(c, S.lesson);
+    if (c && r){
+      const at = Math.round(ytTime);
+      r.lesson.at = at;
+      c.resume = { lessonId:S.lesson, t:now(), at };
+      save();
+    }
   }
 }, 8000);
 

@@ -10,8 +10,11 @@ try { OpenAI = require('openai'); } catch (e) {}
 const GEMINI_MODEL = process.env.GEMINI_MODEL || '';
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || '';
 const GPT_MODEL = process.env.GPT_MODEL || 'gpt-4o';
-const REQUEST_TIMEOUT_MS = 30000;
+const REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || 80000);
 const STATUS_TIMEOUT_MS = 8000;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
+let geminiModelCache = null;
 
 /**
  * MASTER PROMPT SYSTEM ROLE
@@ -83,6 +86,9 @@ function geminiError(status, body) {
 }
 
 async function listGeminiModels(key) {
+  if (geminiModelCache && geminiModelCache.key === key && Date.now() - geminiModelCache.at < MODEL_CACHE_TTL_MS) {
+    return geminiModelCache.models;
+  }
   const models = [];
   let pageToken = '';
   do {
@@ -98,8 +104,10 @@ async function listGeminiModels(key) {
     models.push(...(data.models || []));
     pageToken = data.nextPageToken || '';
   } while (pageToken);
-  return models.filter(model => Array.isArray(model.supportedGenerationMethods)
+  const generativeModels = models.filter(model => Array.isArray(model.supportedGenerationMethods)
     && model.supportedGenerationMethods.includes('generateContent'));
+  geminiModelCache = { key, at:Date.now(), models:generativeModels };
+  return generativeModels;
 }
 
 function modelId(model) {
@@ -222,6 +230,14 @@ async function askGemini(prompt, maxTokens = 2000, key, model = GEMINI_MODEL, st
       return await requestGemini(prompt, maxTokens, finalKey, candidate, structured);
     } catch (error) {
       lastError = error;
+      if (['provider_timeout', 'provider_overloaded', 'provider_unavailable'].includes(error.code)) {
+        try {
+          await sleep(750);
+          return await requestGemini(prompt, maxTokens, finalKey, candidate, structured);
+        } catch (retryError) {
+          lastError = retryError;
+        }
+      }
       if (!['invalid_model', 'provider_overloaded'].includes(error.code)) throw error;
     }
   }
