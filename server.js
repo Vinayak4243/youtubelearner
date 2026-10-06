@@ -18,6 +18,7 @@ const {
 } = require('./public/youtube-url');
 
 const { askText, askJSON, streamText, MODEL, getHealth, checkProviderStatus } = require('./ai');
+const { createSummary } = require('./services/summary-pipeline');
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -173,6 +174,38 @@ function aiFailure(err) {
     return { status: 529, code: 'provider_overloaded', message: `${provider} is temporarily overloaded. Please retry in a moment.` };
   }
   return { status: 502, code: 'upstream_error', message: message ? `${provider} request failed: ${message}` : `${provider} could not complete the request. Please try again.` };
+}
+
+function summaryFailure(err) {
+  const code = String(err?.code || 'LLM_ERROR');
+  const known = {
+    AUTH_ERROR:[503, 'The summary service is temporarily unavailable. Please try again later.'],
+    RATE_LIMIT:[429, 'Busy right now. Try again shortly.'],
+    TIMEOUT:[504, 'This video is taking longer than expected. Try summarizing it section by section.'],
+    INVALID_MODEL_OUTPUT:[502, "Some sections couldn't be generated. Please retry."],
+    TRANSCRIPT_UNAVAILABLE:[422, 'No transcript found. Add transcript text to create a source-grounded summary.'],
+    INVALID_URL:[400, "That doesn't look like a YouTube link."],
+    LLM_ERROR:[502, 'The summary service could not complete this request. Please retry.']
+  }[code] || [502, 'The summary service could not complete this request. Please retry.'];
+  return { status:known[0], code, message:known[1] };
+}
+
+function readSummaryRequest(req, res) {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const transcript = body.transcript || body.source_segments;
+  const characterCount = typeof transcript === 'string' ? transcript.length : Array.isArray(transcript) ? JSON.stringify(transcript).length : 0;
+  if (characterCount > MAX_PROMPT_CHARS) { bad(res, 413, 'The transcript is too large. Send a shorter section.', 'transcript_too_large'); return null; }
+  if (typeof transcript !== 'string' && !Array.isArray(transcript)) { bad(res, 400, 'Provide a timestamped transcript.', 'TRANSCRIPT_UNAVAILABLE'); return null; }
+  return {
+    user_id:req.user.id,
+    video_id:typeof body.video_id === 'string' ? body.video_id.slice(0,128) : '',
+    video_meta:body.video_meta && typeof body.video_meta === 'object' ? body.video_meta : {},
+    transcript,
+    transcript_status:typeof body.transcript_status === 'string' ? body.transcript_status : undefined,
+    goal:typeof body.goal === 'string' ? body.goal.slice(0,200) : 'learning',
+    background_profile:body.background_profile && typeof body.background_profile === 'object' ? body.background_profile : null,
+    student_state:body.student_state && typeof body.student_state === 'object' ? body.student_state : null
+  };
 }
 
 function asyncRoute(fn) {
@@ -650,6 +683,20 @@ app.post(['/api/ai/json', '/ai/json'], authenticateRequest, persistentUserAiRate
   const prompt = readPrompt(req, res); if (prompt === null) return;
   const out = await askJSON(prompt, 3500);
   res.json(out);
+}));
+
+app.post(['/api/summary', '/summary'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, asyncRoute(async (req, res) => {
+  const input = readSummaryRequest(req, res); if (!input) return;
+  try {
+    const result = await createSummary(input);
+    // answerKey remains server-side; it can later be fetched only after a learner submits answers.
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ ok:true, summary:result.summary, meta:result.meta });
+  } catch (error) {
+    const failure = summaryFailure(error);
+    console.error('Summary request failed:', { code:failure.code, userId:req.user.id });
+    bad(res, failure.status, failure.message, failure.code);
+  }
 }));
 
 app.post(['/api/ai/stream', '/ai/stream'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, (req, res) => {
