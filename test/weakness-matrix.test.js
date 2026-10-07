@@ -158,7 +158,7 @@ test('question-level timing and pending subjective attempts are stored without a
   assert.equal(record.timing.elapsedSeconds, 90);
   assert.equal(concept.attempts, 1);
   assert.equal(concept.errors, 0);
-  assert.equal(concept.mastery, 35);
+  assert.equal(concept.mastery, 0);
   WeaknessMatrix.resolvePendingAttempt(course, 'Core', record.id, {
     verdict:'incorrect', errorType:'conceptual', confidence:'medium', feedback:'The core distinction is missing.'
   });

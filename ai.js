@@ -73,13 +73,19 @@ function getHealth() {
   return { ok: true, service: 'available' };
 }
 
-function geminiError(status, body) {
+function geminiError(status, body, headers) {
   const message = body?.error?.message || `Gemini request failed (${status}).`;
   const error = new Error(message);
+  const providerStatus = String(body?.error?.status || '').toLowerCase();
+  const retryAfter = Number(headers?.get?.('retry-after'));
+  if (Number.isFinite(retryAfter) && retryAfter >= 0) error.retryAfter = retryAfter;
   if (status === 401 || status === 403) error.code = 'invalid_api_key';
   else if (status === 404 || /model.*not found|unknown model/i.test(message)) error.code = 'invalid_model';
-  else if (status === 402 || /quota|credit balance|billing/i.test(message)) error.code = 'credits_exhausted';
-  else if (status === 429 || status === 503 || /overload|high demand/i.test(message)) error.code = 'provider_overloaded';
+  // Gemini uses HTTP 429 for both short-lived limits and daily quota.  Do not
+  // claim billing is exhausted unless the provider explicitly says so.
+  else if (status === 402 || /(?:credits? (?:are )?(?:exhausted|depleted)|prepay|billing (?:is )?(?:disabled|required)|payment required)/i.test(message)) error.code = 'credits_exhausted';
+  else if (status === 429 || providerStatus === 'resource_exhausted') error.code = 'rate_limited';
+  else if (status === 503 || /overload|high demand/i.test(message)) error.code = 'provider_overloaded';
   else if (status >= 500) error.code = 'provider_unavailable';
   error.provider = 'gemini';
   return error;
@@ -144,7 +150,7 @@ async function verifyGeminiModel(model, key, availableModels) {
     body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'health check' }] }] }),
     signal: AbortSignal.timeout(STATUS_TIMEOUT_MS)
   });
-  if (!response.ok) throw geminiError(response.status, await response.json().catch(() => ({})));
+  if (!response.ok) throw geminiError(response.status, await response.json().catch(() => ({})), response.headers);
   return model;
 }
 
@@ -352,7 +358,7 @@ async function streamText(prompt, { onDelta, onEnd, onError, maxTokens = 600, si
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw geminiError(res.status, data);
+        throw geminiError(res.status, data, res.headers);
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();

@@ -19,14 +19,26 @@ const {
 
 const { askText, askJSON, streamText, MODEL, getHealth, checkProviderStatus } = require('./ai');
 const { createSummary } = require('./services/summary-pipeline');
+const { ConcurrencyGate, admissionMiddleware } = require('./server/admission-control');
 
 const app = express();
 const PORT = process.env.PORT || 8787;
 const ALLOWED = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 const MAX_PROMPT_CHARS = 200000;
+const AI_MAX_IN_FLIGHT = Math.max(1, Number(process.env.AI_MAX_IN_FLIGHT_PER_INSTANCE || 4));
+const AI_ADMISSION_WAIT_MS = Math.max(0, Number(process.env.AI_ADMISSION_WAIT_MS || 1000));
+const aiGate = new ConcurrencyGate(AI_MAX_IN_FLIGHT);
 app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '4mb' }));
+
+app.use((req, res, next) => {
+  req.requestId = req.get('x-request-id') || require('node:crypto').randomUUID();
+  res.setHeader('X-Request-Id', req.requestId);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
 
 app.use((req, res, next) => {
   if (process.env.VERCEL && /^\/(?:auth|learner)(?:\/|$)/.test(req.path)) req.url = '/api' + req.url;
@@ -66,6 +78,8 @@ const userAiRateLimit = rateLimit({
   message: { error: 'Too many AI requests. Wait a minute and try again.', code: 'rate_limited' }
 });
 
+const aiAdmission = admissionMiddleware(aiGate, { waitMs:AI_ADMISSION_WAIT_MS });
+
 async function persistentUserAiRateLimit(req, res, next) {
   try {
     const { data, error } = await req.userSupabase.rpc('consume_user_ai_rate_limit', { max_requests:20 });
@@ -94,8 +108,14 @@ app.get(/^(?!\/api\/).*$/, (req, res, next) => {
   res.sendFile(path.join(APP_ROOT, 'index.html'));
 });
 
-function bad(res, status, message, code) {
-  return res.status(status).json({ error: message, ...(code ? { code } : {}) });
+function bad(res, status, message, code, details = {}) {
+  return res.status(status).json({
+    error: message,
+    ...(code ? { code } : {}),
+    requestId: res.req?.requestId || null,
+    retryable: details.retryable === true,
+    ...(Number.isFinite(details.retryAfter) ? { retryAfter:details.retryAfter } : {})
+  });
 }
 
 function isMissingSupabaseRpc(error) {
@@ -150,44 +170,50 @@ function aiFailure(err) {
   const message = String((err && err.message) || '');
   const provider = err?.provider === 'openai' ? 'OpenAI' : 'Gemini';
   if (err && err.code === 'missing_api_key') {
-    return { status: 503, code: 'missing_api_key', message: 'AI is not configured. Add a supported provider API key to the server environment, then redeploy.' };
+    return { status: 503, code: 'missing_api_key', message: 'AI is not configured. Add a supported provider API key to the server environment, then redeploy.', retryable:false };
   }
   if (err && err.code === 'invalid_api_key') {
-    return { status: 401, code: 'invalid_api_key', message: `${provider} rejected its configured credential. Check the provider API key in the server environment.` };
+    return { status: 401, code: 'invalid_api_key', message: `${provider} rejected its configured credential. Check the provider API key in the server environment.`, retryable:false };
   }
   if (err && err.code === 'invalid_model') {
-    return { status: 400, code: 'invalid_model', message: `No available ${provider} model passed the provider check. Verify the server model setting and API-key access.` };
+    return { status: 400, code: 'invalid_model', message: `No available ${provider} model passed the provider check. Verify the server model setting and API-key access.`, retryable:false };
+  }
+  if (err && err.code === 'rate_limited') {
+    return { status:429, code:'rate_limited', message:`${provider} is rate limited. Wait briefly, then retry.`, retryable:true, retryAfter:err?.retryAfter };
   }
   if (err && err.code === 'credits_exhausted' || /quota|credit balance|purchase credits|plans?\s*&?\s*billing/i.test(message)) {
-    return { status: 402, code: 'credits_exhausted', message: `${provider} quota or credits are exhausted. Check the provider's billing and quota settings.` };
+    return { status: 402, code: 'credits_exhausted', message: `${provider} quota or credits are exhausted. Check the provider's billing and quota settings.`, retryable:false };
   }
   if ((err && err.code === 'provider_overloaded') || (err && err.status === 503) || /overload|high demand/i.test(message)) {
-    return { status: 503, code: 'provider_overloaded', message: `${provider} is temporarily overloaded. Please retry in a moment.` };
+    return { status: 503, code: 'provider_overloaded', message: `${provider} is temporarily overloaded. Please retry in a moment.`, retryable:true, retryAfter:err?.retryAfter };
   }
   if (err && err.code === 'provider_unavailable') {
-    return { status: 503, code: 'provider_unavailable', message: `${provider} is currently unavailable. Try again later.` };
+    return { status: 503, code: 'provider_unavailable', message: `${provider} is currently unavailable. Try again later.`, retryable:true, retryAfter:err?.retryAfter };
   }
   if (err && err.code === 'provider_timeout') {
-    return { status: 504, code: 'provider_timeout', message: `The ${provider} request timed out. Please retry.` };
+    return { status: 504, code: 'provider_timeout', message: `The ${provider} request timed out. Please retry.`, retryable:true };
   }
   if (/overloaded_error|overloaded/i.test(message)) {
-    return { status: 529, code: 'provider_overloaded', message: `${provider} is temporarily overloaded. Please retry in a moment.` };
+    return { status: 529, code: 'provider_overloaded', message: `${provider} is temporarily overloaded. Please retry in a moment.`, retryable:true, retryAfter:err?.retryAfter };
   }
-  return { status: 502, code: 'upstream_error', message: message ? `${provider} request failed: ${message}` : `${provider} could not complete the request. Please try again.` };
+  return { status: 502, code: 'upstream_error', message: `${provider} could not complete this request. Please retry.`, retryable:true };
 }
 
 function summaryFailure(err) {
   const code = String(err?.code || 'LLM_ERROR');
   const known = {
-    AUTH_ERROR:[503, 'The summary service is temporarily unavailable. Please try again later.'],
-    RATE_LIMIT:[429, 'Busy right now. Try again shortly.'],
-    TIMEOUT:[504, 'This video is taking longer than expected. Try summarizing it section by section.'],
-    INVALID_MODEL_OUTPUT:[502, "Some sections couldn't be generated. Please retry."],
-    TRANSCRIPT_UNAVAILABLE:[422, 'No transcript found. Add transcript text to create a source-grounded summary.'],
-    INVALID_URL:[400, "That doesn't look like a YouTube link."],
-    LLM_ERROR:[502, 'The summary service could not complete this request. Please retry.']
-  }[code] || [502, 'The summary service could not complete this request. Please retry.'];
-  return { status:known[0], code, message:known[1] };
+    AUTH_ERROR:[503, 'The summary service credential is unavailable. Please contact the site owner.', false],
+    INVALID_MODEL:[400, 'The configured summary model is unavailable. Please contact the site owner.', false],
+    CREDITS_EXHAUSTED:[402, 'The summary provider credits are exhausted. Please contact the site owner.', false],
+    RATE_LIMIT:[429, 'The summary provider is busy. Wait briefly, then retry.', true],
+    PROVIDER_OVERLOADED:[503, 'The summary provider is temporarily overloaded. Please retry shortly.', true],
+    TIMEOUT:[504, 'This video is taking longer than expected. Try summarizing it section by section.', true],
+    INVALID_MODEL_OUTPUT:[502, "Some sections couldn't be generated. Please retry.", true],
+    TRANSCRIPT_UNAVAILABLE:[422, 'No transcript found. Add transcript text to create a source-grounded summary.', false],
+    INVALID_URL:[400, "That doesn't look like a YouTube link.", false],
+    LLM_ERROR:[502, 'The summary service could not complete this request. Please retry.', true]
+  }[code] || [502, 'The summary service could not complete this request. Please retry.', true];
+  return { status:known[0], code:code.toLowerCase(), message:known[1], retryable:known[2], retryAfter:err?.retryAfter };
 }
 
 function readSummaryRequest(req, res) {
@@ -222,7 +248,7 @@ function asyncRoute(fn) {
     }
     if (/^\/(?:api\/)?ai(?:\/|$)/.test(req.path)) {
       const failure = aiFailure(err);
-      return bad(res, failure.status, failure.message, failure.code);
+      return bad(res, failure.status, failure.message, failure.code, failure);
     }
     return bad(res, Number.isInteger(err.status) ? err.status : 500, 'The request could not be completed. Please retry.', 'request_failed');
   });
@@ -673,19 +699,19 @@ app.get('/api/video', authenticateRequest, asyncRoute(async (req, res) => {
   res.json({ ok:true, video, transcriptAvailable:false });
 }));
 
-app.post(['/api/ai/text', '/ai/text'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, asyncRoute(async (req, res) => {
+app.post(['/api/ai/text', '/ai/text'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, aiAdmission, asyncRoute(async (req, res) => {
   const prompt = readPrompt(req, res); if (prompt === null) return;
   const text = await askText(prompt, 1500);
   res.json({ text });
 }));
 
-app.post(['/api/ai/json', '/ai/json'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, asyncRoute(async (req, res) => {
+app.post(['/api/ai/json', '/ai/json'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, aiAdmission, asyncRoute(async (req, res) => {
   const prompt = readPrompt(req, res); if (prompt === null) return;
   const out = await askJSON(prompt, 3500);
   res.json(out);
 }));
 
-app.post(['/api/summary', '/summary'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, asyncRoute(async (req, res) => {
+app.post(['/api/summary', '/summary'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, aiAdmission, asyncRoute(async (req, res) => {
   const input = readSummaryRequest(req, res); if (!input) return;
   try {
     const result = await createSummary(input);
@@ -695,11 +721,11 @@ app.post(['/api/summary', '/summary'], authenticateRequest, persistentUserAiRate
   } catch (error) {
     const failure = summaryFailure(error);
     console.error('Summary request failed:', { code:failure.code, userId:req.user.id });
-    bad(res, failure.status, failure.message, failure.code);
+    bad(res, failure.status, failure.message, failure.code, failure);
   }
 }));
 
-app.post(['/api/ai/stream', '/ai/stream'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, (req, res) => {
+app.post(['/api/ai/stream', '/ai/stream'], authenticateRequest, persistentUserAiRateLimit, userAiRateLimit, aiAdmission, (req, res) => {
   const prompt = readPrompt(req, res); if (prompt === null) return;
   const controller = new AbortController();
   req.on('aborted', () => controller.abort());

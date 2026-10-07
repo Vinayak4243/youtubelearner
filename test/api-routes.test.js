@@ -395,7 +395,7 @@ test('AI generation falls back to an advertised Gemini model when configured mod
   }
 });
 
-test('Gemini quota failures identify the provider and return a quota response', async () => {
+test('Gemini 429 limits remain retryable rate limits rather than being misreported as exhausted credits', async () => {
   generationFailure = { status:429, body:{ error:{ message:'Quota exceeded for this model.' } } };
   try {
     const response = await fetch(`${baseUrl}/api/ai/text`, {
@@ -404,12 +404,28 @@ test('Gemini quota failures identify the provider and return a quota response', 
       body:JSON.stringify({ prompt:'test prompt' })
     });
     const body = await response.json();
-    assert.equal(response.status, 402);
-    assert.equal(body.code, 'credits_exhausted');
-    assert.match(body.error, /Gemini quota or credits/);
+    assert.equal(response.status, 429);
+    assert.equal(body.code, 'rate_limited');
+    assert.equal(body.retryable, true);
+    assert.ok(body.requestId);
+    assert.match(body.error, /Gemini is rate limited/);
   } finally {
     generationFailure = null;
   }
+});
+
+test('Gemini explicit billing exhaustion is non-retryable', async () => {
+  generationFailure = { status:402, body:{ error:{ message:'Prepay credits are depleted.' } } };
+  try {
+    const response = await fetch(`${baseUrl}/api/ai/text`, {
+      method:'POST', headers:{ 'content-type':'application/json', authorization:`Bearer ${testAccessToken}` },
+      body:JSON.stringify({ prompt:'test prompt' })
+    });
+    const body = await response.json();
+    assert.equal(response.status, 402);
+    assert.equal(body.code, 'credits_exhausted');
+    assert.equal(body.retryable, false);
+  } finally { generationFailure = null; }
 });
 
 test('Gemini timeouts are reported as provider timeouts with retry guidance', async () => {

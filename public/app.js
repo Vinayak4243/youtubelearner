@@ -354,6 +354,13 @@ function snapshotStorageChunks(text, maxBytes){
 }
 async function uploadSnapshot(payload, baseRevision, expectedUpdatedAt){
   const serialized = JSON.stringify(payload);
+  const uploadLegacySnapshot = () => authRequest('/api/learner/snapshot', {
+    method:'PUT',
+    body:JSON.stringify({ payload, expectedUpdatedAt:expectedUpdatedAt ?? null })
+  });
+  // A missing optional migration must not repeatedly generate failing requests.
+  // Refreshing after the migration is applied re-enables the chunked path.
+  if (uploadSnapshot.chunkedStorageAvailable === false) return uploadLegacySnapshot();
   const chunks = snapshotStorageChunks(serialized, 900 * 1024);
   if (chunks.length > 128) throw Object.assign(new Error('Your learning data is too large for the current account storage limit.'), { code:'snapshot_too_large' });
   const uploadId = (crypto.randomUUID ? crypto.randomUUID() : uid() + Date.now().toString(36) + uid()).replace(/-/g,'');
@@ -370,10 +377,8 @@ async function uploadSnapshot(payload, baseRevision, expectedUpdatedAt){
     });
   } catch(error) {
     if (error.code !== 'snapshot_migration_missing' && error.status !== 404) throw error;
-    return authRequest('/api/learner/snapshot', {
-      method:'PUT',
-      body:JSON.stringify({ payload, expectedUpdatedAt:expectedUpdatedAt ?? null })
-    });
+    uploadSnapshot.chunkedStorageAvailable = false;
+    return uploadLegacySnapshot();
   }
 }
 async function fetchSnapshot(){
@@ -401,7 +406,6 @@ async function restoreAuthenticatedUser(){
   AUTH.user = session.user;
   localRevision = 0;
   acknowledgedRevision = 0;
-  const remote = await fetchSnapshot();
   const recoveryKey = window.AdaptPracticeSnapshotSync.accountRecoveryKey(KEY, AUTH.user.id);
   let localSnapshot = blank();
   try {
@@ -410,6 +414,12 @@ async function restoreAuthenticatedUser(){
   } catch(error) {
     console.warn('Account recovery data could not be read:', String(error?.name || 'storage_error'));
   }
+  // Authentication succeeded. A temporary snapshot/database problem must not
+  // send the learner back to the sign-in screen or mislabel it as an auth error.
+  let remote = { snapshot:null, hasSnapshot:false, revision:0, updatedAt:null };
+  let snapshotRestoreError = null;
+  try { remote = await fetchSnapshot(); }
+  catch(error) { snapshotRestoreError = error; }
   AUTH.recoveryKey = recoveryKey;
   AUTH.cloudRevision = Number(remote.revision) || 0;
   AUTH.cloudUpdatedAt = remote.updatedAt || null;
@@ -438,7 +448,8 @@ async function restoreAuthenticatedUser(){
     AUTH.needsImport = false;
     S.view = 'onboard';
   }
-  AUTH.syncStatus = 'saved';
+  AUTH.syncStatus = snapshotRestoreError ? 'error' : 'saved';
+  AUTH.syncError = snapshotRestoreError ? snapshotErrorMessage(snapshotRestoreError) : '';
 }
 async function loadAuthState(){
   AUTH.loading = true;
@@ -708,6 +719,7 @@ const AI_COPY = {
   invalid_api_key:'Gemini rejected the server credential. Replace GEMINI_API_KEY with a Google AI Studio API key, then redeploy.',
   invalid_model:'No configured AI model passed the provider availability check. Check the server model setting and API-key access, then retry.',
   provider_overloaded:'The AI provider is temporarily overloaded. Please retry in a moment.',
+  rate_limited:'The AI provider is busy. Wait briefly, then retry.',
   provider_unavailable:'The AI provider is unavailable. Check its status and retry.',
   session_expired:'Sign in to your AI provider again, then retry.',
   refused:'The AI model declined this request. Try rephrasing your source or question.',
@@ -729,13 +741,13 @@ async function ask(input, opts){
   opts = opts || {};
   if (!SAMPLE) throw { code:'not_granted', message:'backend unreachable' };
   if (!opts.onText) {
-    const res = await fetch(API_BASE + '/api/ai/text', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS) });
+    const res = await fetch(API_BASE + '/api/ai/text', { method:'POST', headers:{ 'Content-Type':'application/json', ...(opts.signal ? {} : {}) }, body: JSON.stringify({ prompt: input }), signal:opts.signal || AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS) });
     if (!res.ok) throw await backendError(res);
     const data = await res.json();
     return { text: data.text || '' };
   }
   return new Promise((resolve, reject) => {
-    fetch(API_BASE + '/api/ai/stream', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS) })
+    fetch(API_BASE + '/api/ai/stream', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:opts.signal || AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS) })
       .then(async res => {
         if (!res.ok || !res.body) return reject(await backendError(res));
         const reader = res.body.getReader(); const decoder = new TextDecoder();
@@ -762,16 +774,17 @@ async function ask(input, opts){
 }
 /** JSON completion — the backend extracts/repairs JSON from Claude's reply and returns the parsed value directly. */
 async function askJson(input, opts){
+  opts = opts || {};
   if (!SAMPLE) throw { code:'not_granted', message:'backend unreachable' };
-  const res = await fetch(API_BASE + '/api/ai/json', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS) });
+  const res = await fetch(API_BASE + '/api/ai/json', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ prompt: input }), signal:opts.signal || AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS) });
   if (!res.ok) throw await backendError(res);
   return res.json();
 }
 async function backendError(res){
   let code = 'upstream_error', message = 'Request failed (' + res.status + ')';
-  try { const j = await res.json(); if (j && j.error) message = j.error; if (j && j.code) code = j.code; if (res.status === 429) code = 'rate_limited'; if (res.status === 413) code = 'prompt_too_large'; }
+  try { const j = await res.json(); if (j && j.error) message = j.error; if (j && j.code) code = j.code; if (res.status === 429 && !j?.code) code = 'rate_limited'; if (res.status === 413) code = 'prompt_too_large'; return { code, message, requestId:j?.requestId || res.headers.get('x-request-id') || null, retryable:j?.retryable === true, retryAfter:Number.isFinite(j?.retryAfter) ? j.retryAfter : null }; }
   catch(e) {}
-  return { code, message };
+  return { code, message, requestId:res.headers.get('x-request-id') || null, retryable:res.status === 429 || res.status >= 500, retryAfter:null };
 }
 
 /* ---------- learning events ---------- */
@@ -786,7 +799,7 @@ function ev(type, payload){
 function conceptOf(course, name){
   const k = String(name||'General').trim();
   if (!course.concepts[k]) course.concepts[k] = {
-    name:k, mastery:35, attempts:0, correct:0, errors:0, hints:0, confusion:0,
+    name:k, mastery:0, attempts:0, correct:0, errors:0, hints:0, confusion:0,
     status:'new', source:null, lastSeen:0, history:[], attemptHistory:[], errorTypes:{}
   };
   return course.concepts[k];
@@ -797,6 +810,9 @@ function recordAttempt(course, name, res, attemptRecord){
   return window.AdaptPracticeWeaknessMatrix.recordConceptAttempt(course, name, res, attemptRecord);
 }
 function restatus(c){
+  // Earlier builds assigned 35% before any assessed evidence existed. Keep
+  // real attempts intact, but make untouched concepts explicitly unassessed.
+  if (!Number(c.attempts) && !Number(c.confusion) && !(Array.isArray(c.attemptHistory) && c.attemptHistory.length)) c.mastery = 0;
   const prev = c.status;
   Object.assign(c, window.AdaptPracticeWeaknessMatrix.learningState(c));
   return prev !== c.status;
@@ -831,7 +847,8 @@ function rawLesson(course, id){
 const getCourse = id => D.courses.find(c => c.id === id);
 
 /* ---------- router ---------- */
-const S = { view:'landing', course:null, lesson:null, work:null, busy:'', apiError:'', modal:null, wizard:null, session:null, courseTab:'overview', courseSearch:'', weakTopic:null, historyPage:0, historyCourse:null, lessonMapOpen:true, lessonSlide:'video', confusePrompt:null, tabAction:null };
+const S = { view:'landing', course:null, lesson:null, work:null, busy:'', operations:{}, apiError:'', modal:null, wizard:null, session:null, courseTab:'overview', courseSearch:'', weakTopic:null, historyPage:0, historyCourse:null, lessonMapOpen:true, lessonSlide:'video', confusePrompt:null, tabAction:null };
+function isBusy(key){ return Boolean(S.operations && S.operations[key]); }
 function updateAuthLocation(mode, replace){
   const hash = mode ? window.AdaptPracticeAuthRoutes.hashForMode(mode) : '';
   const url = location.pathname + location.search + hash;
@@ -1503,7 +1520,7 @@ function vLesson(){
     + '<button class="btn sec sm" data-act="lesson-slide" data-slide="video">Back to video</button></div>'
     + (lesson.summary
       ? '<div class="sheet pad md"><div class="between"><h3>Key takeaways</h3><span class="tag">'+(hasSourceText?'Based on source text':'General knowledge — no transcript text')+'</span></div><div style="margin-top:12px">'+mdLite(lesson.summary)+'</div></div>'
-      : S.busy === 'summary'
+      : isBusy('summary:'+c.id+':'+lesson.id)
         ? '<div class="sheet pad"><div class="think"><span class="spin"></span> Reading the lecture and building the summary…</div></div>'
         : '<div class="sheet empty"><h3>No summary yet</h3><p class="muted">Generate a focused summary for this lesson and keep it here as slide two.</p>'+(SAMPLE?'<button class="btn go" data-act="summarize" data-c="'+c.id+'" data-l="'+lesson.id+'">Summarise this lesson</button>':'<div class="note bad">The AI service is unavailable, so summaries cannot be generated.</div>')+'</div>')
     + lessonFooter + '</div>';
@@ -1512,7 +1529,7 @@ function vLesson(){
     + '<div class="between" style="margin-bottom:16px"><div><span class="pill">SLIDE 3</span><h2>Practice session quiz</h2></div>'
     + (a && a.submitted ? '<button class="btn sec sm" data-act="new-assign" data-c="'+c.id+'" data-l="'+lesson.id+'">New quiz</button>' : '<button class="btn sec sm" data-act="lesson-slide" data-slide="video">Back to video</button>') + '</div>'
     + (a ? assignmentHtml(c, a, false)
-      : S.busy === 'assign'
+      : isBusy('assign:'+c.id+':'+lesson.id)
         ? '<div class="sheet pad"><div class="think"><span class="spin"></span> Writing questions from this lesson and your last mistakes…</div></div>'
         : '<div class="sheet empty"><h3>Ready to practise?</h3><p class="muted" style="max-width:46ch;margin:0 auto 14px">Build a short quiz from this lesson and the concepts you have been getting wrong.</p>'+(SAMPLE?'<button class="btn go" data-act="new-assign" data-c="'+c.id+'" data-l="'+lesson.id+'">Start practice</button>':'<div class="note bad">The AI service is unavailable, so questions cannot be generated.</div>')+'</div>')
     + lessonFooter + '</div>';
@@ -1602,7 +1619,7 @@ function vWork(){
   h += '<div class="between" style="margin-bottom:18px"><h1>Practice</h1><div class="row">'
     + D.courses.map(x => '<button class="chip'+(x.id===c.id?' on':'')+'" data-act="pick-course" data-c="'+x.id+'">'+esc(x.name)+'</button>').join('')
     + '</div></div>';
-  if (S.busy === 'assign') return h + '<div class="sheet pad"><div class="think"><span class="spin"></span> Building your next assignment from what you got wrong last time…</div></div>';
+  if (isBusy('assign:'+c.id+':course')) return h + '<div class="sheet pad"><div class="think"><span class="spin"></span> Building your next assignment from your source and learning history…</div></div>';
   if (!a) return h + '<div class="sheet empty"><h3>No assignment yet</h3><p class="muted" style="max-width:46ch;margin:0 auto 14px">The first set is drawn from your material. Every set after that is drawn from your mistakes in the one before it.</p>'
     + (SAMPLE ? '<button class="btn go" data-act="new-assign" data-c="'+c.id+'">Generate an assignment</button>' : '<div class="note bad">AI is unavailable in this view.</div>') + '</div>';
   return h + assignmentHtml(c, a, false)
@@ -1616,8 +1633,8 @@ function assignmentHtml(c, a, compact){
   if (!a.submitted){
     const answered = a.questions.filter((q,i) => a.answers[i] !== undefined && a.answers[i] !== '').length;
     h += '<div class="row between" style="margin-top:14px"><span class="dim">'+answered+' of '+a.questions.length+' answered</span>'
-      + '<button class="btn go" data-act="submit" data-c="'+c.id+'" data-a="'+a.id+'"'+(S.busy==='grade'?' disabled':'')+'>'
-      + (S.busy==='grade' ? '<span class="spin"></span> Marking…' : 'Submit assignment') + '</button></div>';
+      + '<button class="btn go" data-act="submit" data-c="'+c.id+'" data-a="'+a.id+'"'+(isBusy('grade:'+c.id+':'+a.id)?' disabled':'')+'>'
+      + (isBusy('grade:'+c.id+':'+a.id) ? '<span class="spin"></span> Marking…' : 'Submit assignment') + '</button></div>';
   } else if (a.report){
     h += (a.gradingStatus === 'pending' ? '<div class="note warn" role="status" style="margin-top:16px">Your answers and objectively scored questions are saved. Subjective feedback is pending because AI grading was unavailable. <button class="btn sec sm" data-act="retry-grade" data-c="'+c.id+'" data-a="'+a.id+'"'+(SAMPLE && S.busy!=='grade'?'':' disabled')+'>Retry grading</button></div>' : '')
       + '<div class="sheet pad" style="margin-top:16px;border-left:3px solid var(--pine)"><h3>What this tells us</h3>'
@@ -1773,7 +1790,7 @@ function vRoadmap(){
     + D.courses.map(x => '<button class="chip'+(x.id===c.id?' on':'')+'" data-act="pick-course" data-c="'+x.id+'">'+esc(x.name)+'</button>').join('') + '</div></div>';
   const road = c.roadmap || [];
   if (!road.length) return h + '<div class="sheet empty"><h3>No roadmap for this course yet</h3><p class="muted" style="max-width:48ch;margin:0 auto 14px">A roadmap is the bridge from what you said you already know to what your goal needs. Claude reads the gap and lays out the order.</p>'
-    + (SAMPLE ? '<button class="btn go" data-act="gen-roadmap" data-c="'+c.id+'">'+(S.busy==='road'?'<span class="spin"></span> Working out the gap…':'Build my roadmap')+'</button>' : '') + '</div>';
+    + (SAMPLE ? '<button class="btn go" data-act="gen-roadmap" data-c="'+c.id+'"'+(isBusy('road:'+c.id)?' disabled':'')+'>'+ (isBusy('road:'+c.id)?'<span class="spin"></span> Working out the gap…':'Build my roadmap')+'</button>' : '') + '</div>';
 
   const score = n => {
     const ks = (n.concepts||[]).map(k => c.concepts[k]).filter(Boolean);
@@ -2028,6 +2045,9 @@ function pdfContentChunks(pages, maxChars){
 }
 
 async function buildPdfCourseMap(wizard){
+  if ((wizard.lowQualityPdfPages || []).length) {
+    throw Object.assign(new Error('PDF text extraction is low quality on page ' + wizard.lowQualityPdfPages.join(', ') + '. Paste corrected text or use an OCR-enabled PDF before AI enrichment.'), { code:'pdf_extraction_low_quality' });
+  }
   const chunks = pdfContentChunks((wizard.pages || []).filter(page => page.text.trim()), 160000);
   if (!chunks.length) throw Object.assign(new Error('No readable PDF page text is available for course enrichment.'), { code:'empty_pdf_text' });
   const mapped = new Map();
@@ -2533,13 +2553,14 @@ async function genRoadmap(c){
 
 /* ======================= ACTIONS ======================= */
 function val(id){ const el = document.getElementById(id); return el ? el.value.trim() : ''; }
-async function guard(fn, busyKey){
-  if (S.busy) return;
-  S.busy = busyKey; render();
+async function guard(fn, busyKey, resourceKey){
+  const key = resourceKey || busyKey;
+  if (isBusy(key)) return;
+  S.operations[key] = busyKey; render();
   S.apiError = '';
   try { await fn(); }
   catch(err){ S.apiError = aiErr(err); console.warn('AI operation failed:', err && err.code || 'request_failed'); }
-  finally { S.busy = ''; render(); }
+  finally { delete S.operations[key]; render(); }
 }
 
 document.addEventListener('click', async e => {
@@ -2725,7 +2746,7 @@ document.addEventListener('click', async e => {
         rawLesson(c, l.id).lesson.summary = text;
         ev('summary', { label:l.title, courseId:c.id });
         save();
-      }, 'summary');
+      }, 'summary', 'summary:'+c.id+':'+l.id);
       break;
     }
     case 'generate-summary-tab': {
@@ -2737,7 +2758,7 @@ document.addEventListener('click', async e => {
         rawLesson(c, l.id).lesson.summary = text;
         ev('summary', { label:l.title, courseId:c.id });
         save();
-      }, 'summary');
+      }, 'summary', 'summary:'+c.id+':'+l.id);
       break;
     }
 
@@ -2779,7 +2800,7 @@ document.addEventListener('click', async e => {
         const asg = newAssignment(course, out, { lessonId: t.dataset.l || (S.view==='lesson' ? S.lesson : null) });
         S.work = asg.id; S.course = course.id;
         if (S.view !== 'lesson') S.view = 'work';
-      }, 'assign');
+      }, 'assign', 'assign:'+course.id+':'+(t.dataset.l || (S.view==='lesson' ? S.lesson : 'course')));
       break;
     }
     case 'target': {
@@ -2789,7 +2810,7 @@ document.addEventListener('click', async e => {
         const asg = newAssignment(c, out, { concept:k });
         asg.title = out.title || ('Intervention — ' + k);
         S.work = asg.id; S.course = c.id; S.view = 'work'; S.lesson = null;
-      }, 'assign');
+      }, 'assign', 'assign:'+c.id+':target:'+k);
       break;
     }
     case 'open-work': go('work', { course:c.id, work:t.dataset.a }); break;
@@ -2849,7 +2870,7 @@ document.addEventListener('click', async e => {
     case 'gen-roadmap': await guard(async () => {
       const out = await genRoadmap(c);
       c.roadmap = out.roadmap || []; c.gap = out.gap || ''; save();
-    }, 'road'); break;
+    }, 'road', 'road:'+c.id); break;
 
     /* focus shield */
     case 'start-session': {
@@ -3014,6 +3035,7 @@ document.addEventListener('change', async e => {
     if (S.wizard !== w || w.pdfToken !== token || w.srcType !== 'pdf') return;
     w.text = extracted.text;
     w.pages = extracted.pages;
+    w.lowQualityPdfPages = extracted.lowQualityPages || [];
     w.previewReady = false;
     w.importState = 'PDF text extracted. Preview it before adding.';
     if (!w.text.replace(/\[page \d+\]/g,'').trim()){
@@ -3022,7 +3044,9 @@ document.addEventListener('change', async e => {
       w.importState = 'Failed';
       return;
     }
-    stat.textContent = file.name + ' · all ' + doc.numPages + ' pages read · ' + w.text.length.toLocaleString() + ' characters';
+    stat.textContent = w.lowQualityPdfPages.length
+      ? file.name + ' · text needs review on page ' + w.lowQualityPdfPages.join(', ') + '. Material can be saved, but AI enrichment will wait for corrected/OCR text.'
+      : file.name + ' · all ' + doc.numPages + ' pages read · ' + w.text.length.toLocaleString() + ' characters';
   } catch(err){
     if (S.wizard !== w || w.pdfToken !== token) return;
     if (previousPdf.text || previousPdf.pages?.length) {
@@ -3186,6 +3210,7 @@ function finishCourse(w, out, enrichment){
     url:w.url, listId: w.srcType==='playlist' ? (w.listId || ytListId(w.url)) : null,
     videoId:w.srcType==='video' ? w.videoId : null,
     fingerprint:w.srcType==='pdf' ? (w.fileFingerprint || '') : '',
+    lowQualityPdfPages:w.srcType==='pdf' ? (w.lowQualityPdfPages || []) : [],
     metadataAvailable:w.srcType==='video' ? !!w.metadataAvailable : null,
     text:w.srcType === 'pdf' ? '' : (w.text || ''), pages:w.pages || [],
     transcriptStatus:w.srcType==='video' ? (w.transcriptStatus || 'missing') : null,
@@ -3362,7 +3387,7 @@ async function submitAssignment(c, a){
       applyAssignmentGrade(c, a, pendingGrade(a));
       S.apiError = aiErr(error);
     }
-  }, 'grade');
+  }, 'grade', 'grade:'+c.id+':'+a.id);
 }
 function confuseModal(c, l, at){
   return '<div class="modal"><div class="box pad">'

@@ -1,11 +1,12 @@
 'use strict';
 
 class LLMError extends Error {
-  constructor(code, message, { retryable = false, cause } = {}) {
+  constructor(code, message, { retryable = false, retryAfter = null, cause } = {}) {
     super(message);
     this.name = 'LLMError';
     this.code = code;
     this.retryable = retryable;
+    this.retryAfter = retryAfter;
     this.cause = cause;
   }
 }

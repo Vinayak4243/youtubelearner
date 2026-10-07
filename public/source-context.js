@@ -101,12 +101,25 @@
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent();
-      const pageContent = content.items.map(item => item.str || '').join(' ').trim();
-      pages.push({ page:pageNumber, text:pageContent });
+      // PDF text items are frequently emitted in drawing order. Reconstruct
+      // visual lines first so two-column material and equations are less
+      // likely to be interleaved before they reach the AI.
+      const items = content.items.filter(item => String(item.str || '').trim()).map(item => ({
+        text:String(item.str || ''), x:Number(item.transform?.[4]) || 0, y:Number(item.transform?.[5]) || 0
+      })).sort((a, b) => Math.abs(b.y - a.y) > 3 ? b.y - a.y : a.x - b.x);
+      const lines = [];
+      for (const item of items) {
+        const line = lines.at(-1);
+        if (line && Math.abs(line.y - item.y) <= 3) line.items.push(item);
+        else lines.push({ y:item.y, items:[item] });
+      }
+      const pageContent = lines.map(line => line.items.sort((a,b) => a.x - b.x).map(item => item.text).join(' ')).join('\n').trim();
+      const suspicious = !pageContent || pageContent.length < 24 || /(?:\ufffd|\u0000)/.test(pageContent) || (items.length > 20 && pageContent.replace(/\s/g, '').length < items.length * 0.35);
+      pages.push({ page:pageNumber, text:pageContent, extractionQuality:suspicious ? 'low' : 'usable' });
       text += `\n[page ${pageNumber}]\n${pageContent}`;
       if (onProgress) onProgress(pageNumber, document.numPages);
     }
-    return { pages, text:text.trim() };
+    return { pages, text:text.trim(), lowQualityPages:pages.filter(page => page.extractionQuality === 'low').map(page => page.page) };
   }
 
   return { parseTimecode, parseTranscript, timestampWindow, pageText, selectPdfPages, pdfPageRange, extractPdfPages };

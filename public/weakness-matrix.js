@@ -79,7 +79,7 @@
     const conceptName = String(name || 'General').trim() || 'General';
     course.concepts = course.concepts || {};
     const concept = course.concepts[conceptName] || (course.concepts[conceptName] = {
-      name:conceptName, mastery:35, attempts:0, correct:0, errors:0, hints:0,
+      name:conceptName, mastery:0, attempts:0, correct:0, errors:0, hints:0,
       confusion:0, status:'new', source:null, lastSeen:0, history:[], errorTypes:{}
     });
     concept.attemptHistory = Array.isArray(concept.attemptHistory) ? concept.attemptHistory : [];
