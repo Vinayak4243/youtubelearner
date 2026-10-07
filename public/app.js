@@ -1253,8 +1253,8 @@ function vWizard(){
         + f('Transcript or your notes <span class="dim">(optional)</span>','<textarea id="w-text" style="min-height:140px" placeholder="Paste the transcript from YouTube\'s “Show transcript” panel, or your own notes.">'+esc(w.text)+'</textarea>')
         + '<p class="dim">Video metadata and transcript availability are checked separately. The YouTube Data API does not provide a transcript; without one, summaries and practice will be labeled as general knowledge.</p>';
     } else if (w.srcType === 'pdf'){
-      src = '<div class="field"><label class="f" for="w-pdf">PDF file</label><input type="file" id="w-pdf" accept="application/pdf"><div class="dim" id="w-pdfstat" role="status" aria-live="polite" style="margin-top:6px">'+(w.fileName ? esc(w.fileName)+' · '+w.text.length.toLocaleString()+' characters read' : 'The PDF is read locally; extracted text is saved with this course and syncs to your account.')+'</div></div>'
-        + f('Or paste the text','<textarea id="w-text" style="min-height:140px" placeholder="Paste chapter text here if the PDF is scanned or the reader cannot open it.">'+esc(w.text)+'</textarea>');
+      src = '<div class="field"><label class="f" for="w-document">Document file</label><input type="file" id="w-document" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx"><div class="dim" id="w-documentstat" role="status" aria-live="polite" style="margin-top:6px">'+(w.fileName ? esc(w.fileName)+' · '+w.text.length.toLocaleString()+' characters read' : 'PDF, Word (.docx), and PowerPoint (.pptx) files are read locally; extracted text is saved with this course and syncs to your account.')+'</div></div>'
+        + f('Or paste the text','<textarea id="w-text" style="min-height:140px" placeholder="Paste chapter text here if the document is scanned or cannot be read.">'+esc(w.text)+'</textarea>');
     } else {
       src = f('Pasted text or notes','<textarea id="w-text" style="min-height:180px" placeholder="Paste your notes or learning material here.">'+esc(w.text)+'</textarea>');
     }
@@ -1265,12 +1265,12 @@ function vWizard(){
           return '<li><a href="'+esc(item.url)+'" target="_blank" rel="noopener noreferrer">'+esc(item.title)+'</a><span class="dim"> · #'+item.index+'</span>'+(duplicate?'<span class="tag md">Duplicate of #'+duplicate.firstIndex+'</span>':'')+'</li>';
         }).join('')+'</ol>'+(w.playlistItems.length>20?'<p class="dim">Showing first 20 of '+w.playlistItems.length+' videos.</p>':'')
       : w.srcType==='video' ? '<p class="tiny muted"><b>Title:</b> '+esc(w.videoMetadata?.title || 'Metadata unavailable')+'</p><p class="tiny muted"><b>Transcript:</b> '+(w.transcriptStatus==='available'?'Available in supplied text':w.transcriptStatus==='manual_unindexed'?'Supplied notes have no timestamps':'Unavailable; source-based summaries cannot be produced')+'</p>'+(w.metadataError?'<p class="tiny muted">'+esc(w.metadataError)+'</p>':'')
-      : '<p class="tiny muted"><b>Source:</b> '+esc(w.fileName || (w.srcType==='pdf'?'Pasted PDF text':'Pasted notes'))+(w.pages?.length?' · '+w.pages.length+' pages':'')+'</p><pre class="source-preview-text">'+esc((w.pages?.find(page=>page.text.trim())?.text || w.text || '').slice(0,900))+'</pre>')
+      : '<p class="tiny muted"><b>Source:</b> '+esc(w.fileName || (w.srcType==='pdf'?'Pasted document text':'Pasted notes'))+(w.pages?.length?' · '+w.pages.length+' pages or slides':'')+'</p><pre class="source-preview-text">'+esc((w.pages?.find(page=>page.text.trim())?.text || w.text || '').slice(0,900))+'</pre>')
       + (w.duplicateTitle ? '<div class="note warn" role="status">This source is already in this course as “'+esc(w.duplicateTitle)+'”. Return to the course instead of adding it again.</div>' : '')
       + '</div>' : '';
     src = '<fieldset class="source-fields"'+(S.busy?' disabled':'')+'>'+src+'</fieldset>';
     inner = '<h2>Bring your material</h2>'
-      + '<div class="row source-tabs" style="gap:8px;margin-bottom:16px">'+tab('playlist','YouTube playlist')+tab('video','Single video')+tab('pdf','PDF')+tab('text','Pasted notes')+'</div>'
+      + '<div class="row source-tabs" style="gap:8px;margin-bottom:16px">'+tab('playlist','YouTube playlist')+tab('video','Single video')+tab('pdf','Documents')+tab('text','Pasted notes')+'</div>'
       + src
       + (w.sourceError ? '<div class="note bad" role="alert" style="margin-bottom:14px">'+esc(w.sourceError)+'</div>' : '')
       + (w.importState ? '<p class="dim" role="status">'+esc(w.importState)+'</p>' : '')
@@ -1335,7 +1335,7 @@ function vCourse(){
   /* course map */
   h += '<div class="sheet pad"><div class="between"><h3>Course map</h3><span class="dim">'+(c.sources||[]).length+' source'+((c.sources||[]).length===1?'':'s')+'</span></div>';
   (c.sources||[]).forEach(s => {
-    h += '<div style="margin-top:14px"><div class="row tiny muted" style="gap:6px"><span class="tag">'+(s.type==='pdf'?'PDF':s.type==='playlist'?'Playlist':s.type==='text'?'Notes':'Video')+'</span><span>'+esc(s.title)+'</span>'
+    h += '<div style="margin-top:14px"><div class="row tiny muted" style="gap:6px"><span class="tag">'+(s.type==='pdf'?(s.documentFormat || 'pdf').toUpperCase():s.type==='playlist'?'Playlist':s.type==='text'?'Notes':'Video')+'</span><span>'+esc(s.title)+'</span>'
       + (s.type==='video' && s.metadataAvailable===false ? '<span class="tag hi">Video metadata unavailable</span>' : '')
       + (s.transcriptStatus==='missing' ? '<span class="tag md">Transcript unavailable</span>' : '')
       + (s.transcriptStatus==='manual_unindexed' ? '<span class="tag md">Manual notes · no timestamps</span>' : '')
@@ -1354,6 +1354,7 @@ function vCourse(){
 
   /* side */
   h += '<div class="stack">';
+  h += vAdvancedNotes(c);
   h += '<div class="sheet pad"><h3>Weak concepts</h3>'
     + (weak.length ? '<ul style="list-style:none;padding:0;margin:10px 0 0;font-size:.88rem">' + weak.map(x =>
         '<li style="padding:7px 0;border-bottom:1px solid var(--rule-soft)"><div class="between" style="gap:8px"><span>'+esc(x.name)+'</span><span class="tag '+({high:'hi',medium:'md',low:'lo'}[prioBand(priority(x))])+'">'+pct(x.mastery)+'</span></div>'
@@ -1371,11 +1372,52 @@ function vCourse(){
   h += '</div></div>';
   return h;
 }
+
+const localDate = () => new Date().toLocaleDateString('en-CA');
+const readableDate = value => {
+  const date = String(value || '');
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(date + 'T00:00:00').toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' }) : 'Undated';
+};
+function safeWebLink(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+  } catch (error) { return ''; }
+}
+function reminderText(value) {
+  if (!value) return '';
+  const today = localDate();
+  return value < today ? 'Overdue · ' + readableDate(value) : value === today ? 'Due today' : 'Reminder · ' + readableDate(value);
+}
+function vAdvancedNotes(c) {
+  const notes = [...(c.advancedNotes || [])].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')) || Number(b.created || 0) - Number(a.created || 0));
+  const grouped = notes.reduce((groups, note) => {
+    const key = note.date || 'undated';
+    (groups[key] ||= []).push(note);
+    return groups;
+  }, {});
+  const saved = Object.entries(grouped).map(([date, items]) => '<div class="advanced-note-group"><div class="advanced-note-date">'+esc(readableDate(date))+'</div>'
+    + items.map(note => {
+      const link = safeWebLink(note.link);
+      const reminder = reminderText(note.reminder);
+      return '<article class="advanced-note"><div class="advanced-note-body">'+(note.text ? '<p>'+esc(note.text).replace(/\n/g,'<br>')+'</p>' : '')
+        + (link ? '<a class="advanced-note-link" href="'+esc(link)+'" target="_blank" rel="noopener noreferrer">Open saved link ↗</a>' : '')
+        + (reminder ? '<span class="tag '+(note.reminder <= localDate() ? 'hi' : 'md')+'">'+esc(reminder)+'</span>' : '')+'</div>'
+        + '<button class="btn ghost sm" data-act="delete-advanced-note" data-c="'+esc(c.id)+'" data-n="'+esc(note.id)+'" aria-label="Delete note">Remove</button></article>';
+    }).join('')+'</div>').join('');
+  return '<section class="sheet pad"><h3>Advanced notes</h3><p class="muted tiny" style="margin:6px 0 14px">Keep dated notes, useful links, and reminders for this course.</p>'
+    + '<div class="advanced-note-form"><div class="grid g2"><div class="field"><label class="f" for="advanced-note-date">Date</label><input id="advanced-note-date" type="date" value="'+localDate()+'"></div>'
+    + '<div class="field"><label class="f" for="advanced-note-reminder">Reminder <span class="dim">(optional)</span></label><input id="advanced-note-reminder" type="date"></div></div>'
+    + '<div class="field"><label class="f" for="advanced-note-text">Note</label><textarea id="advanced-note-text" placeholder="Write an important idea, task, question, or revision note…"></textarea></div>'
+    + '<div class="field"><label class="f" for="advanced-note-link">Useful link <span class="dim">(optional)</span></label><input id="advanced-note-link" type="url" placeholder="https://example.com/resource"></div>'
+    + '<button class="btn go sm" data-act="save-advanced-note" data-c="'+esc(c.id)+'">Save note</button></div>'
+    + (saved ? '<div class="advanced-note-list">'+saved+'</div>' : '<p class="muted tiny" style="margin:16px 0 0">No notes saved for this course yet.</p>')+'</section>';
+}
 function vCourseTab(c, tab){
   const sources = c.sources || [];
   if (tab === 'materials') {
     return '<div class="sheet pad"><div class="between"><div><h2>Materials</h2><p class="muted">Sources are grouped in lesson order. Reordering sources does not change lesson or assignment progress.</p></div><button class="btn go" data-act="add-source" data-c="'+c.id+'">+ Add material</button></div>'
-      + (sources.length ? sources.map((source,index) => '<section class="source-card"><div class="between"><div><span class="tag">'+esc(source.type==='playlist'?'Playlist':source.type==='video'?'Video':source.type==='pdf'?'PDF':'Notes')+'</span> <b>'+esc(source.title)+'</b><div class="dim">'+(source.lessons||[]).length+' lessons'+(source.transcriptStatus==='missing'?' · transcript unavailable':'')+'</div></div>'
+      + (sources.length ? sources.map((source,index) => '<section class="source-card"><div class="between"><div><span class="tag">'+esc(source.type==='playlist'?'Playlist':source.type==='video'?'Video':source.type==='pdf'?(source.documentFormat || 'pdf').toUpperCase():'Notes')+'</span> <b>'+esc(source.title)+'</b><div class="dim">'+(source.lessons||[]).length+' lessons'+(source.transcriptStatus==='missing'?' · transcript unavailable':'')+'</div></div>'
         + '<div class="row"><button class="btn ghost sm" data-act="rename-source" data-c="'+c.id+'" data-s="'+source.id+'">Rename</button><button class="btn ghost sm" data-act="source-up" data-c="'+c.id+'" data-s="'+source.id+'"'+(index===0?' disabled':'')+' aria-label="Move source up">↑</button><button class="btn ghost sm" data-act="source-down" data-c="'+c.id+'" data-s="'+source.id+'"'+(index===sources.length-1?' disabled':'')+' aria-label="Move source down">↓</button><button class="btn ghost sm" data-act="remove-source" data-c="'+c.id+'" data-s="'+source.id+'">Remove</button></div></div>'
         + (source.unavailableCount ? '<div class="note warn" role="status" style="margin-top:10px">'+source.unavailableCount+' unavailable, deleted or private playlist item(s) were skipped. No replacement videos were added.</div>' : '')
         + (source.enrichmentPending ? '<div class="note warn" role="status" style="margin-top:10px">Material saved without AI enrichment. '+esc(source.enrichmentError || 'Retry when AI is available.')+' <button class="btn sec sm" data-act="retry-enrichment" data-c="'+c.id+'" data-s="'+source.id+'"'+(SAMPLE && !S.busy?'':' disabled')+'>Retry AI enrichment</button></div>' : '')
@@ -2703,6 +2745,27 @@ document.addEventListener('click', async e => {
       if (title && title.trim()){ source.title = title.trim().slice(0,160); save(); render(); }
       break;
     }
+    case 'save-advanced-note': {
+      if (!c) return;
+      const text = val('advanced-note-text');
+      const linkValue = val('advanced-note-link');
+      const link = linkValue ? safeWebLink(linkValue) : '';
+      const date = val('advanced-note-date') || localDate();
+      const reminder = val('advanced-note-reminder');
+      if (!text && !link && !reminder) { toast('Add a note, link, or reminder before saving.'); return; }
+      if (linkValue && !link) { toast('Use a full http:// or https:// link.'); return; }
+      c.advancedNotes = c.advancedNotes || [];
+      c.advancedNotes.push({ id:uid(), date, text:text.slice(0,6000), link, reminder, created:now() });
+      ev('advanced_note_saved', { label:'Advanced note saved', courseId:c.id });
+      save(); render(); toast('Advanced note saved to this course.');
+      break;
+    }
+    case 'delete-advanced-note': {
+      if (!c || !confirm('Delete this advanced note?')) return;
+      c.advancedNotes = (c.advancedNotes || []).filter(note => note.id !== t.dataset.n);
+      save(); render(); toast('Advanced note deleted.');
+      break;
+    }
     case 'source-up':
     case 'source-down': {
       const sources = c?.sources || [];
@@ -2989,6 +3052,46 @@ document.addEventListener('input', e => {
     recordQuestionAnswer(asg, t.dataset.i, t.value); save();
   }
 });
+function officeTextNodes(xml, paragraphTag) {
+  const parsed = new DOMParser().parseFromString(xml, 'application/xml');
+  if (parsed.querySelector('parsererror')) throw new Error('The document XML could not be read.');
+  return Array.from(parsed.getElementsByTagNameNS('*', paragraphTag)).map(node =>
+    Array.from(node.getElementsByTagNameNS('*', 't')).map(text => text.textContent || '').join('').trim()
+  ).filter(Boolean);
+}
+
+async function extractOfficePages(buffer, format) {
+  if (!window.JSZip) throw new Error('The document reader did not initialize. Reload the page and try again.');
+  const zip = await window.JSZip.loadAsync(buffer);
+  if (format === 'docx') {
+    const documentFile = zip.file('word/document.xml');
+    if (!documentFile) throw new Error('This Word file is missing its document text.');
+    const paragraphs = officeTextNodes(await documentFile.async('string'), 'p');
+    return { pages:[{ page:1, text:paragraphs.join('\n') }], lowQualityPages:[] };
+  }
+  const slides = Object.keys(zip.files)
+    .filter(name => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+    .sort((a, b) => Number(a.match(/slide(\d+)/)?.[1]) - Number(b.match(/slide(\d+)/)?.[1]));
+  if (!slides.length) throw new Error('This PowerPoint file has no readable slides.');
+  const pages = await Promise.all(slides.map(async (name, index) => ({
+    page:index + 1,
+    text:officeTextNodes(await zip.file(name).async('string'), 'sp').join('\n')
+  })));
+  return { pages, lowQualityPages:[] };
+}
+
+function documentFormat(file) {
+  const name = String(file?.name || '').toLowerCase();
+  if (file?.type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+  if (file?.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || name.endsWith('.docx')) return 'docx';
+  if (file?.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || name.endsWith('.pptx')) return 'pptx';
+  return null;
+}
+
+function documentText(pages) {
+  return (pages || []).map(page => '[page ' + page.page + ']\n' + page.text).join('\n\n');
+}
+
 document.addEventListener('change', async e => {
   if (e.target.dataset.act === 'transcript-input'){
     clearTimeout(transcriptSaveTimer);
@@ -2996,30 +3099,32 @@ document.addEventListener('change', async e => {
     save();
     return;
   }
-  if (e.target.id !== 'w-pdf') return;
+  if (e.target.id !== 'w-document') return;
   if (S.busy) return;
   const file = e.target.files && e.target.files[0]; if (!file) return;
   const w = S.wizard;
-  const stat = document.getElementById('w-pdfstat');
+  const stat = document.getElementById('w-documentstat');
   if (!w || w.srcType !== 'pdf') return;
-  if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')){ stat.textContent = 'Choose a PDF file. This file was not read or uploaded.'; e.target.value = ''; return; }
-  if (file.size > 15 * 1024 * 1024){ stat.textContent = 'This PDF is larger than the current 15 MB local extraction limit. Split it into smaller documents; no content was uploaded.'; e.target.value = ''; return; }
-  if (!window.pdfjsLib || !window.AdaptPracticeSourceContext){
-    console.error('PDF reader initialization failed:', { pdfjsLoaded:!!window.pdfjsLib, sourceContextLoaded:!!window.AdaptPracticeSourceContext });
-    stat.textContent = 'The PDF reader did not initialize. Reload the page; if it persists, paste the text instead.';
+  const format = documentFormat(file);
+  if (!format){ stat.textContent = 'Choose a PDF, Word (.docx), or PowerPoint (.pptx) file. This file was not read or uploaded.'; e.target.value = ''; return; }
+  if (file.size > 15 * 1024 * 1024){ stat.textContent = 'This file is larger than the current 15 MB local extraction limit. Split it into smaller documents; no content was uploaded.'; e.target.value = ''; return; }
+  if ((format === 'pdf' && (!window.pdfjsLib || !window.AdaptPracticeSourceContext)) || ((format === 'docx' || format === 'pptx') && !window.JSZip)){
+    console.error('Document reader initialization failed:', { format, pdfjsLoaded:!!window.pdfjsLib, zipLoaded:!!window.JSZip, sourceContextLoaded:!!window.AdaptPracticeSourceContext });
+    stat.textContent = 'The document reader did not initialize. Reload the page; if it persists, paste the text instead.';
     w.sourceError = stat.textContent;
     return;
   }
   const token = uid();
   w.pdfToken = token;
-  const previousPdf = { fileName:w.fileName, fingerprint:w.fileFingerprint, text:w.text, pages:w.pages };
+  const previousPdf = { fileName:w.fileName, documentFormat:w.documentFormat, fingerprint:w.fileFingerprint, text:w.text, pages:w.pages };
   w.fileName = file.name;
+  w.documentFormat = format;
   w.fileFingerprint = [file.name.toLowerCase(), file.size, file.lastModified].join(':');
   w.previewReady = false;
   w.sourceError = '';
-  w.importState = 'Extracting PDF text…';
-  S.busy = 'Extracting PDF text…';
-  document.querySelectorAll('#w-url,#w-text,#w-pdf,.source-tabs button,[data-act="w-build"],[data-act="w-back"]').forEach(control => { control.disabled = true; });
+  w.importState = 'Extracting document text…';
+  S.busy = 'Extracting document text…';
+  document.querySelectorAll('#w-url,#w-text,#w-document,.source-tabs button,[data-act="w-build"],[data-act="w-back"]').forEach(control => { control.disabled = true; });
   stat.innerHTML = '<span class="spin"></span> Reading ' + esc(file.name) + '…';
   let loadingTask, doc;
   const bounded = (promise, onTimeout) => new Promise((resolve, reject) => {
@@ -3030,37 +3135,43 @@ document.addEventListener('change', async e => {
     Promise.resolve(promise).then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
   });
   try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     const buf = await bounded(file.arrayBuffer());
     if (S.wizard !== w || w.pdfToken !== token || w.srcType !== 'pdf') return;
     if (window.crypto?.subtle) {
       const digest = await crypto.subtle.digest('SHA-256', buf);
       w.fileFingerprint = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
     }
-    loadingTask = pdfjsLib.getDocument({ data: buf });
-    doc = await bounded(loadingTask.promise, () => loadingTask.destroy());
-    const extracted = await bounded(window.AdaptPracticeSourceContext.extractPdfPages(doc, (page, total) => {
-      stat.innerHTML = '<span class="spin"></span> Reading page ' + page + ' of ' + total + '…';
-    }), () => doc.destroy());
+    let extracted;
+    if (format === 'pdf') {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      loadingTask = pdfjsLib.getDocument({ data: buf });
+      doc = await bounded(loadingTask.promise, () => loadingTask.destroy());
+      extracted = await bounded(window.AdaptPracticeSourceContext.extractPdfPages(doc, (page, total) => {
+        stat.innerHTML = '<span class="spin"></span> Reading page ' + page + ' of ' + total + '…';
+      }), () => doc.destroy());
+    } else {
+      extracted = await bounded(extractOfficePages(buf, format));
+    }
     if (S.wizard !== w || w.pdfToken !== token || w.srcType !== 'pdf') return;
-    w.text = extracted.text;
+    w.text = extracted.text || documentText(extracted.pages);
     w.pages = extracted.pages;
     w.lowQualityPdfPages = extracted.lowQualityPages || [];
     w.previewReady = false;
-    w.importState = 'PDF text extracted. Preview it before adding.';
+    w.importState = 'Document text extracted. Preview it before adding.';
     if (!w.text.replace(/\[page \d+\]/g,'').trim()){
-      stat.textContent = 'No selectable text was found. This PDF may be scanned; OCR is not configured. Paste text manually instead.';
+      stat.textContent = format === 'pdf' ? 'No selectable text was found. This PDF may be scanned; OCR is not configured. Paste text manually instead.' : 'No readable text was found in this document. Paste its text manually instead.';
       w.sourceError = stat.textContent;
       w.importState = 'Failed';
       return;
     }
     stat.textContent = w.lowQualityPdfPages.length
       ? file.name + ' · text needs review on page ' + w.lowQualityPdfPages.join(', ') + '. Material can be saved, but AI enrichment will wait for corrected/OCR text.'
-      : file.name + ' · all ' + doc.numPages + ' pages read · ' + w.text.length.toLocaleString() + ' characters';
+      : file.name + ' · all ' + (format === 'pdf' ? doc.numPages + ' pages' : w.pages.length + (format === 'pptx' ? ' slides' : ' section')) + ' read · ' + w.text.length.toLocaleString() + ' characters';
   } catch(err){
     if (S.wizard !== w || w.pdfToken !== token) return;
     if (previousPdf.text || previousPdf.pages?.length) {
       w.fileName = previousPdf.fileName;
+      w.documentFormat = previousPdf.documentFormat;
       w.fileFingerprint = previousPdf.fingerprint;
       w.text = previousPdf.text;
       w.pages = previousPdf.pages;
@@ -3069,7 +3180,7 @@ document.addEventListener('change', async e => {
     console.error('PDF extraction failed:', { code });
     if (err?.name === 'PasswordException') w.sourceError = 'This PDF is password-protected. Unlock it and select it again, or paste its text.';
     else if (/timed out|exceeded 45 seconds/i.test(String(err?.message || ''))) w.sourceError = 'PDF extraction took longer than 45 seconds. Try a smaller PDF or paste its text.';
-    else w.sourceError = 'PDF extraction failed ('+code+'). Check that the file is not damaged and try again, or paste its text.';
+    else w.sourceError = 'Document extraction failed ('+code+'). Check that the file is not damaged and try again, or paste its text.';
     w.importState = 'Failed';
     if (stat) stat.textContent = w.sourceError;
   } finally {
@@ -3220,6 +3331,7 @@ function finishCourse(w, out, enrichment){
     url:w.url, listId: w.srcType==='playlist' ? (w.listId || ytListId(w.url)) : null,
     videoId:w.srcType==='video' ? w.videoId : null,
     fingerprint:w.srcType==='pdf' ? (w.fileFingerprint || '') : '',
+    documentFormat:w.srcType==='pdf' ? (w.documentFormat || '') : '',
     lowQualityPdfPages:w.srcType==='pdf' ? (w.lowQualityPdfPages || []) : [],
     metadataAvailable:w.srcType==='video' ? !!w.metadataAvailable : null,
     text:w.srcType === 'pdf' ? '' : (w.text || ''), pages:w.pages || [],

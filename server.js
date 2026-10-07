@@ -64,6 +64,9 @@ app.use('/api/', rateLimit({
 app.use('/api/auth/', rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 12,
+  // Loading the landing page checks configuration and an existing session.
+  // Those read-only requests must not exhaust the budget that protects
+  // password and account-creation submissions.
   skip: req => ['GET', 'HEAD', 'OPTIONS'].includes(req.method),
   standardHeaders: true,
   legacyHeaders: false,
