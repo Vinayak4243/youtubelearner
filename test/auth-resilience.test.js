@@ -11,4 +11,6 @@ test('snapshot migration failure is isolated from successful account authenticat
   assert.match(app, /let snapshotRestoreError = null/);
   assert.match(app, /AUTH\.syncStatus = snapshotRestoreError \? 'error' : 'saved'/);
   assert.match(app, /uploadSnapshot\.chunkedStorageAvailable = false/);
+  assert.match(app, /if \(AUTH\.user\) \{/);
+  assert.match(app, /errors while\n    \/\/ restoring\/merging their private snapshot are sync errors/);
 });

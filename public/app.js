@@ -487,8 +487,18 @@ async function loadAuthState(){
       applyRouteFromLocation();
     }
   } catch(error){
-    AUTH.user = null;
-    AUTH.error = error.status === 401 ? '' : authErrorMessage(error);
+    // Once the session endpoint has authenticated the learner, errors while
+    // restoring/merging their private snapshot are sync errors, never an
+    // authentication failure. Keep navigation usable and preserve recovery.
+    if (AUTH.user) {
+      AUTH.syncStatus = 'error';
+      AUTH.syncError = snapshotErrorMessage(error);
+      AUTH.error = '';
+      S.view = D.profile ? 'dash' : 'onboard';
+    } else {
+      AUTH.user = null;
+      AUTH.error = error.status === 401 ? '' : authErrorMessage(error);
+    }
     if (AUTH.configured){
       const callbackMode = new URLSearchParams(location.search).get('auth') === 'reset' ? 'reset' : null;
       const routeMode = callbackMode || window.AdaptPracticeAuthRoutes.modeFromHash(location.hash);
