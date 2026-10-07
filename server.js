@@ -64,6 +64,7 @@ app.use('/api/', rateLimit({
 app.use('/api/auth/', rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 12,
+  skip: req => ['GET', 'HEAD', 'OPTIONS'].includes(req.method),
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many authentication attempts. Try again later.', code: 'rate_limited' }
