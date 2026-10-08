@@ -12,6 +12,10 @@ const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || '';
 const GPT_MODEL = process.env.GPT_MODEL || 'gpt-4o';
 const REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || 80000);
 const STATUS_TIMEOUT_MS = 8000;
+// A provider 429 is usually a short-lived RPM/TPM limit.  Keep retries
+// deliberately slow so a burst from one learner does not create another one.
+const GEMINI_RATE_LIMIT_RETRIES = Math.max(0, Number(process.env.GEMINI_RATE_LIMIT_RETRIES || 1));
+const GEMINI_RETRY_DELAY_MS = Math.max(0, Number(process.env.GEMINI_RETRY_DELAY_MS || 15000));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
 let geminiModelCache = null;
@@ -222,6 +226,11 @@ async function requestGemini(prompt, maxTokens, key, model, structured = false) 
   return content.trim();
 }
 
+function geminiRetryDelay(error, attempt) {
+  if (Number.isFinite(error?.retryAfter) && error.retryAfter >= 0) return error.retryAfter * 1000;
+  return Math.min(30000, GEMINI_RETRY_DELAY_MS * (2 ** attempt));
+}
+
 async function askGemini(prompt, maxTokens = 2000, key, model = GEMINI_MODEL, structured = false) {
   const finalKey = key || process.env.GEMINI_API_KEY;
   if (!finalKey) throw Object.assign(new Error('GEMINI_API_KEY is missing.'), { code:'missing_api_key', provider:'gemini' });
@@ -236,6 +245,18 @@ async function askGemini(prompt, maxTokens = 2000, key, model = GEMINI_MODEL, st
       return await requestGemini(prompt, maxTokens, finalKey, candidate, structured);
     } catch (error) {
       lastError = error;
+      if (error.code === 'rate_limited') {
+        for (let attempt = 0; attempt < GEMINI_RATE_LIMIT_RETRIES; attempt++) {
+          await sleep(geminiRetryDelay(error, attempt));
+          try {
+            return await requestGemini(prompt, maxTokens, finalKey, candidate, structured);
+          } catch (retryError) {
+            lastError = retryError;
+            if (retryError.code !== 'rate_limited') break;
+            error = retryError;
+          }
+        }
+      }
       if (['provider_timeout', 'provider_overloaded', 'provider_unavailable'].includes(error.code)) {
         try {
           await sleep(750);
