@@ -37,4 +37,4 @@ This application is designed to keep web, authentication, and data-sync requests
 
 ## Configuration
 
-`AI_MAX_IN_FLIGHT_PER_INSTANCE=4` and `AI_ADMISSION_WAIT_MS=1000` are safe initial defaults, not universal limits. Adjust them only after observing Function CPU/memory, Gemini latency, and quota consumption.
+`AI_MAX_IN_FLIGHT_PER_INSTANCE=1`, `AI_REQUESTS_PER_MINUTE=4`, and `AI_ADMISSION_WAIT_MS=1000` are conservative free-tier defaults, not universal limits. Adjust them only after observing Function CPU/memory, Gemini latency, and quota consumption. Gemini `429` retries wait 15 seconds by default (`GEMINI_RETRY_DELAY_MS`) and occur once (`GEMINI_RATE_LIMIT_RETRIES`).

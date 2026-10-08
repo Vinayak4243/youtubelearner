@@ -240,7 +240,7 @@ BEGIN
   END LOOP;
 END $$;
 
-create or replace function public.consume_user_ai_rate_limit(max_requests integer default 20)
+create or replace function public.consume_user_ai_rate_limit(max_requests integer default 4)
 returns boolean
 language plpgsql
 as $$

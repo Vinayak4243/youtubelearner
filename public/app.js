@@ -1251,6 +1251,7 @@ function vWizard(){
     } else if (w.srcType === 'video'){
       src = f('Video link','<input type="url" id="w-url" value="'+esc(w.url)+'" placeholder="https://www.youtube.com/watch?v=…">')
         + f('Transcript or your notes <span class="dim">(optional)</span>','<textarea id="w-text" style="min-height:140px" placeholder="Paste the transcript from YouTube\'s “Show transcript” panel, or your own notes.">'+esc(w.text)+'</textarea>')
+        + '<div class="field"><label class="f" for="w-document">Document/PDF <span class="dim">(optional)</span></label><input type="file" id="w-document" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx"><div class="dim" id="w-documentstat" role="status" aria-live="polite" style="margin-top:6px">'+(w.fileName ? esc(w.fileName)+' · '+w.text.length.toLocaleString()+' characters read and saved with this video' : 'Attach the same PDF, Word, or PowerPoint material to save its extracted text with this video.')+'</div></div>'
         + '<p class="dim">Video metadata and transcript availability are checked separately. The YouTube Data API does not provide a transcript; without one, summaries and practice will be labeled as general knowledge.</p>';
     } else if (w.srcType === 'pdf'){
       src = '<div class="field"><label class="f" for="w-document">Document file</label><input type="file" id="w-document" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx"><div class="dim" id="w-documentstat" role="status" aria-live="polite" style="margin-top:6px">'+(w.fileName ? esc(w.fileName)+' · '+w.text.length.toLocaleString()+' characters read' : 'PDF, Word (.docx), and PowerPoint (.pptx) files are read locally; extracted text is saved with this course and syncs to your account.')+'</div></div>'
@@ -1335,7 +1336,7 @@ function vCourse(){
   /* course map */
   h += '<div class="sheet pad"><div class="between"><h3>Course map</h3><span class="dim">'+(c.sources||[]).length+' source'+((c.sources||[]).length===1?'':'s')+'</span></div>';
   (c.sources||[]).forEach(s => {
-    h += '<div style="margin-top:14px"><div class="row tiny muted" style="gap:6px"><span class="tag">'+(s.type==='pdf'?(s.documentFormat || 'pdf').toUpperCase():s.type==='playlist'?'Playlist':s.type==='text'?'Notes':'Video')+'</span><span>'+esc(s.title)+'</span>'
+    h += '<div style="margin-top:14px"><div class="row tiny muted" style="gap:6px"><span class="tag">'+(s.type==='pdf'?(s.documentFormat || 'pdf').toUpperCase():s.type==='playlist'?'Playlist':s.type==='text'?'Notes':'Video')+'</span><span>'+esc(s.title)+'</span>'+(s.type==='video' && s.fileName ? '<span class="tag">'+esc((s.documentFormat || 'document').toUpperCase())+' attached</span><span>'+esc(s.fileName)+'</span>' : '')
       + (s.type==='video' && s.metadataAvailable===false ? '<span class="tag hi">Video metadata unavailable</span>' : '')
       + (s.transcriptStatus==='missing' ? '<span class="tag md">Transcript unavailable</span>' : '')
       + (s.transcriptStatus==='manual_unindexed' ? '<span class="tag md">Manual notes · no timestamps</span>' : '')
@@ -1417,7 +1418,7 @@ function vCourseTab(c, tab){
   const sources = c.sources || [];
   if (tab === 'materials') {
     return '<div class="sheet pad"><div class="between"><div><h2>Materials</h2><p class="muted">Sources are grouped in lesson order. Reordering sources does not change lesson or assignment progress.</p></div><button class="btn go" data-act="add-source" data-c="'+c.id+'">+ Add material</button></div>'
-      + (sources.length ? sources.map((source,index) => '<section class="source-card"><div class="between"><div><span class="tag">'+esc(source.type==='playlist'?'Playlist':source.type==='video'?'Video':source.type==='pdf'?(source.documentFormat || 'pdf').toUpperCase():'Notes')+'</span> <b>'+esc(source.title)+'</b><div class="dim">'+(source.lessons||[]).length+' lessons'+(source.transcriptStatus==='missing'?' · transcript unavailable':'')+'</div></div>'
+      + (sources.length ? sources.map((source,index) => '<section class="source-card"><div class="between"><div><span class="tag">'+esc(source.type==='playlist'?'Playlist':source.type==='video'?'Video':source.type==='pdf'?(source.documentFormat || 'pdf').toUpperCase():'Notes')+'</span> <b>'+esc(source.title)+'</b><div class="dim">'+(source.lessons||[]).length+' lessons'+(source.transcriptStatus==='missing'?' · transcript unavailable':'')+(source.type==='video' && source.fileName ? ' · '+esc(source.fileName)+' attached' : '')+'</div></div>'
         + '<div class="row"><button class="btn ghost sm" data-act="rename-source" data-c="'+c.id+'" data-s="'+source.id+'">Rename</button><button class="btn ghost sm" data-act="source-up" data-c="'+c.id+'" data-s="'+source.id+'"'+(index===0?' disabled':'')+' aria-label="Move source up">↑</button><button class="btn ghost sm" data-act="source-down" data-c="'+c.id+'" data-s="'+source.id+'"'+(index===sources.length-1?' disabled':'')+' aria-label="Move source down">↓</button><button class="btn ghost sm" data-act="remove-source" data-c="'+c.id+'" data-s="'+source.id+'">Remove</button></div></div>'
         + (source.unavailableCount ? '<div class="note warn" role="status" style="margin-top:10px">'+source.unavailableCount+' unavailable, deleted or private playlist item(s) were skipped. No replacement videos were added.</div>' : '')
         + (source.enrichmentPending ? '<div class="note warn" role="status" style="margin-top:10px">Material saved without AI enrichment. '+esc(source.enrichmentError || 'Retry when AI is available.')+' <button class="btn sec sm" data-act="retry-enrichment" data-c="'+c.id+'" data-s="'+source.id+'"'+(SAMPLE && !S.busy?'':' disabled')+'>Retry AI enrichment</button></div>' : '')
@@ -3104,7 +3105,10 @@ document.addEventListener('change', async e => {
   const file = e.target.files && e.target.files[0]; if (!file) return;
   const w = S.wizard;
   const stat = document.getElementById('w-documentstat');
-  if (!w || w.srcType !== 'pdf') return;
+  // The video form intentionally uses the same local document importer. Its
+  // extracted text becomes saved video source material; standalone Documents
+  // continue to use this exact path unchanged.
+  if (!w || !['pdf', 'video'].includes(w.srcType)) return;
   const format = documentFormat(file);
   if (!format){ stat.textContent = 'Choose a PDF, Word (.docx), or PowerPoint (.pptx) file. This file was not read or uploaded.'; e.target.value = ''; return; }
   if (file.size > 15 * 1024 * 1024){ stat.textContent = 'This file is larger than the current 15 MB local extraction limit. Split it into smaller documents; no content was uploaded.'; e.target.value = ''; return; }
@@ -3136,7 +3140,7 @@ document.addEventListener('change', async e => {
   });
   try {
     const buf = await bounded(file.arrayBuffer());
-    if (S.wizard !== w || w.pdfToken !== token || w.srcType !== 'pdf') return;
+    if (S.wizard !== w || w.pdfToken !== token || !['pdf', 'video'].includes(w.srcType)) return;
     if (window.crypto?.subtle) {
       const digest = await crypto.subtle.digest('SHA-256', buf);
       w.fileFingerprint = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -3152,7 +3156,7 @@ document.addEventListener('change', async e => {
     } else {
       extracted = await bounded(extractOfficePages(buf, format));
     }
-    if (S.wizard !== w || w.pdfToken !== token || w.srcType !== 'pdf') return;
+    if (S.wizard !== w || w.pdfToken !== token || !['pdf', 'video'].includes(w.srcType)) return;
     w.text = extracted.text || documentText(extracted.pages);
     w.pages = extracted.pages;
     w.lowQualityPdfPages = extracted.lowQualityPages || [];
@@ -3330,9 +3334,10 @@ function finishCourse(w, out, enrichment){
     title: w.srcType==='pdf' ? (w.fileName || 'Pasted PDF text') : (w.srcType==='video' ? (w.videoMetadata?.title || ('YouTube video ' + w.videoId)) : w.srcType==='text' ? 'Pasted notes' : 'YouTube playlist'),
     url:w.url, listId: w.srcType==='playlist' ? (w.listId || ytListId(w.url)) : null,
     videoId:w.srcType==='video' ? w.videoId : null,
-    fingerprint:w.srcType==='pdf' ? (w.fileFingerprint || '') : '',
-    documentFormat:w.srcType==='pdf' ? (w.documentFormat || '') : '',
-    lowQualityPdfPages:w.srcType==='pdf' ? (w.lowQualityPdfPages || []) : [],
+    fileName:(w.srcType==='pdf' || w.srcType==='video') ? (w.fileName || '') : '',
+    fingerprint:(w.srcType==='pdf' || w.srcType==='video') ? (w.fileFingerprint || '') : '',
+    documentFormat:(w.srcType==='pdf' || w.srcType==='video') ? (w.documentFormat || '') : '',
+    lowQualityPdfPages:(w.srcType==='pdf' || w.srcType==='video') ? (w.lowQualityPdfPages || []) : [],
     metadataAvailable:w.srcType==='video' ? !!w.metadataAvailable : null,
     text:w.srcType === 'pdf' ? '' : (w.text || ''), pages:w.pages || [],
     transcriptStatus:w.srcType==='video' ? (w.transcriptStatus || 'missing') : null,
