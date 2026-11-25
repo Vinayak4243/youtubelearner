@@ -659,6 +659,14 @@ test('mocked authentication supports sign-in, sign-out, recovery email and passw
   assert.equal(recovery.status, 200);
   assert.equal(recoveryRedirectTo, 'https://students.example.test/?auth=reset');
 
+  const recoverySession = await fetch(`${baseUrl}/api/auth/reset/exchange`, {
+    method:'POST',
+    headers:{ 'content-type':'application/json' },
+    body:JSON.stringify({ access_token:testAccessToken, refresh_token:'test-refresh-token' })
+  });
+  assert.equal(recoverySession.status, 200, await recoverySession.clone().text());
+  assert.match(recoverySession.headers.get('set-cookie') || '', /ap_access=.*HttpOnly/);
+
   const passwordUpdate = await fetch(`${baseUrl}/api/auth/reset-password`, {
     method:'POST',
     headers:{ 'content-type':'application/json', authorization:`Bearer ${testAccessToken}`, cookie:`ap_access=${testAccessToken}; ap_refresh=test-refresh-token` },

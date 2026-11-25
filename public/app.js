@@ -461,6 +461,9 @@ async function loadAuthState(){
     const params = new URLSearchParams(location.search);
     const tokenHash = params.get('token_hash');
     const authCode = params.get('code');
+    const callbackTokens = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const recoveryAccessToken = callbackTokens.get('access_token');
+    const recoveryRefreshToken = callbackTokens.get('refresh_token');
     if (tokenHash && params.get('auth') === 'verify'){
       const type = params.get('type') || 'signup';
       await authRequest('/api/auth/verify', { method:'POST', body:JSON.stringify({ token_hash:tokenHash, type }) });
@@ -476,6 +479,10 @@ async function loadAuthState(){
       history.replaceState({}, '', location.pathname);
       if (params.get('auth') === 'reset'){ AUTH.mode = 'reset'; recoveryFlow = true; }
       else AUTH.notice = 'Email confirmed. Your account is ready.';
+    } else if (params.get('auth') === 'reset' && recoveryAccessToken && recoveryRefreshToken && callbackTokens.get('type') === 'recovery'){
+      await authRequest('/api/auth/reset/exchange', { method:'POST', body:JSON.stringify({ access_token:recoveryAccessToken, refresh_token:recoveryRefreshToken }) });
+      history.replaceState({}, '', location.pathname);
+      AUTH.mode = 'reset'; recoveryFlow = true;
     }
     await restoreAuthenticatedUser();
     if (recoveryFlow){
