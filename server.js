@@ -503,7 +503,11 @@ app.post('/api/auth/forgot-password', asyncRoute(async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   if (!/^\S+@\S+\.\S+$/.test(email)) return bad(res, 400, 'Enter a valid email address.', 'invalid_email');
   const { url, anonKey } = getSupabaseConfig();
-  const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+  // This is deliberately an implicit flow. A server-created PKCE verifier is
+  // not available when the learner later opens the email link, so a fresh
+  // serverless invocation cannot exchange that PKCE code. Supabase returns a
+  // short-lived recovery session in the callback fragment instead.
+  const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, flowType: 'implicit' } });
   const redirectTo = (process.env.AUTH_SITE_URL || req.get('origin') || '').replace(/\/$/, '') + '/?auth=reset';
   const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo });
   if (error) return bad(res, 502, 'Could not send a reset email. Check Supabase Auth email settings.', 'reset_email_failed');
@@ -526,10 +530,16 @@ app.post('/api/auth/verify', asyncRoute(async (req, res) => {
 app.post('/api/auth/reset/exchange', asyncRoute(async (req, res) => {
   if (!hasSupabaseConfig()) return bad(res, 503, 'Authentication is not configured.', 'auth_unavailable');
   const code = String(req.body?.code || '').trim();
-  if (!code || code.length > 4096) return bad(res, 400, 'The reset link is invalid or expired.', 'invalid_reset_code');
+  const accessToken = String(req.body?.access_token || '').trim();
+  const refreshToken = String(req.body?.refresh_token || '').trim();
+  if ((!code && !(accessToken && refreshToken)) || code.length > 4096 || accessToken.length > 16384 || refreshToken.length > 4096) {
+    return bad(res, 400, 'The reset link is invalid or expired.', 'invalid_reset_code');
+  }
   const { url, anonKey } = getSupabaseConfig();
   const client = createClient(url, anonKey, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
-  const { data, error } = await client.auth.exchangeCodeForSession(code);
+  const { data, error } = code
+    ? await client.auth.exchangeCodeForSession(code)
+    : await client.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
   if (error || !data.session) return bad(res, 400, 'The reset link is invalid or expired.', 'invalid_reset_code');
   res.setHeader('Set-Cookie', sessionCookies(data.session));
   res.json({ user: { id: data.user.id, email: data.user.email } });
