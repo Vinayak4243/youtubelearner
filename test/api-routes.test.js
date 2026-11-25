@@ -6,6 +6,8 @@ const { getSupabaseConfig, sessionCookies } = require('../server/auth');
 
 process.env.GEMINI_API_KEY = 'test-server-key';
 process.env.GEMINI_MODEL = 'retired-configured-model';
+process.env.GEMINI_RATE_LIMIT_RETRIES = '0';
+process.env.AI_REQUESTS_PER_MINUTE = '60';
 process.env.YOUTUBE_API_KEY = 'test-youtube-key';
 process.env.OPENAI_API_KEY = '';
 process.env.SUPABASE_URL = 'https://supabase.test';

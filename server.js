@@ -25,8 +25,11 @@ const app = express();
 const PORT = process.env.PORT || 8787;
 const ALLOWED = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 const MAX_PROMPT_CHARS = 200000;
-const AI_MAX_IN_FLIGHT = Math.max(1, Number(process.env.AI_MAX_IN_FLIGHT_PER_INSTANCE || 4));
+// Keep the default below typical free-tier Gemini RPM quotas.  Deployments
+// with paid capacity can raise this explicitly after checking their quota.
+const AI_MAX_IN_FLIGHT = Math.max(1, Number(process.env.AI_MAX_IN_FLIGHT_PER_INSTANCE || 1));
 const AI_ADMISSION_WAIT_MS = Math.max(0, Number(process.env.AI_ADMISSION_WAIT_MS || 1000));
+const AI_REQUESTS_PER_MINUTE = Math.max(1, Number(process.env.AI_REQUESTS_PER_MINUTE || 4));
 const aiGate = new ConcurrencyGate(AI_MAX_IN_FLIGHT);
 app.set('trust proxy', 1);
 
@@ -75,7 +78,7 @@ app.use('/api/auth/', rateLimit({
 
 const userAiRateLimit = rateLimit({
   windowMs: 60 * 1000,
-  max: 20,
+  max: AI_REQUESTS_PER_MINUTE,
   keyGenerator: req => req.user.id,
   standardHeaders: true,
   legacyHeaders: false,
@@ -86,7 +89,7 @@ const aiAdmission = admissionMiddleware(aiGate, { waitMs:AI_ADMISSION_WAIT_MS })
 
 async function persistentUserAiRateLimit(req, res, next) {
   try {
-    const { data, error } = await req.userSupabase.rpc('consume_user_ai_rate_limit', { max_requests:20 });
+    const { data, error } = await req.userSupabase.rpc('consume_user_ai_rate_limit', { max_requests:AI_REQUESTS_PER_MINUTE });
     if (error) {
       if (isMissingSupabaseRpc(error)) {
         console.warn('consume_user_ai_rate_limit is missing; using the per-instance AI rate limiter until the migration is applied.');

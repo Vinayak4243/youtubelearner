@@ -144,6 +144,12 @@ enabled before testing account data sync.
   requirements: if either is no longer available, the server tries other
   advertised generation-capable models. Check `/api/health` after deployment
   to confirm the provider and selected model.
+- For Gemini free-tier protection, the server defaults to one in-flight AI
+  request and four requests per user per minute. Tune `AI_MAX_IN_FLIGHT_PER_INSTANCE`
+  and `AI_REQUESTS_PER_MINUTE` only after checking the quota for the selected
+  model. A transient Gemini `429` is retried once after 15 seconds by default;
+  set `GEMINI_RATE_LIMIT_RETRIES` or `GEMINI_RETRY_DELAY_MS` if your quota
+  needs a different policy.
 - Required for automated YouTube playlist/video metadata: `YOUTUBE_API_KEY`.
   The key is read only by the server; Vercel does not use a local `yt-dlp`
   executable.
